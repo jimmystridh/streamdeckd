@@ -79,6 +79,11 @@ pub struct Runtime {
     device: Option<Arc<dyn DeckDevice>>,
     renderer: Renderer,
     frames: FrameCache,
+    /// The last semantic view rendered per key. Rasterizing a 144x144 canvas is
+    /// three orders of magnitude more expensive than building and comparing the
+    /// view, so an unchanged view skips composition entirely — before this cache,
+    /// 92% of rendered images were hashed and then discarded as identical.
+    last_views: HashMap<KeyPosition, streamdeck_core::view::KeyView>,
     metrics: Metrics,
     alert: Option<AlertState>,
     /// Track identities with an artwork download already running, so a 2-second
@@ -116,6 +121,7 @@ impl Runtime {
             device: None,
             renderer,
             frames: FrameCache::new(),
+            last_views: HashMap::new(),
             metrics: Metrics::new(),
             alert: None,
             artwork_in_flight: std::collections::HashSet::new(),
@@ -136,8 +142,16 @@ impl Runtime {
 
     pub fn attach_device(&mut self, device: Arc<dyn DeckDevice>) {
         self.device = Some(device);
-        self.frames.invalidate();
+        self.invalidate_render_caches();
         self.state.presses.clear();
+    }
+
+    /// Forgets every rendered frame and view. The two caches must stay in
+    /// lockstep: clearing only the frame hashes while views survive would make
+    /// the next repaint skip composition and leave the deck stale.
+    fn invalidate_render_caches(&mut self) {
+        self.frames.invalidate();
+        self.last_views.clear();
     }
 
     fn now_ms(&self) -> u64 {
@@ -237,11 +251,11 @@ impl Runtime {
                 tracing::warn!(component = "device", "the deck disconnected");
                 self.device = None;
                 self.state.presses.clear();
-                self.frames.invalidate();
+                self.invalidate_render_caches();
             }
             RuntimeEvent::DeviceReconnected => {
                 self.metrics.device_reconnects += 1;
-                self.frames.invalidate();
+                self.invalidate_render_caches();
                 self.state.presses.clear();
                 if let Some(device) = &self.device {
                     let _ = device.set_brightness(self.state.config.brightness).await;
@@ -704,10 +718,15 @@ impl Runtime {
             let mut view = render(binding.tile, &context);
             view.pressed = self.state.presses.is_held(binding.position);
             view.armed = self.state.presses.is_armed(binding.position);
+            if self.last_views.get(&binding.position) == Some(&view) {
+                self.metrics.renders_skipped += 1;
+                continue;
+            }
             match self.renderer.render(&view) {
                 Ok(key) => {
                     self.metrics.renders += 1;
                     payloads.insert(binding.position, key);
+                    self.last_views.insert(binding.position, view);
                 }
                 Err(error) => {
                     tracing::error!(component = "render", error = %error, "could not render a key")
@@ -734,9 +753,14 @@ impl Runtime {
         let mut view = render(binding.tile, &context);
         view.pressed = self.state.presses.is_held(position);
         view.armed = self.state.presses.is_armed(position);
+        if self.last_views.get(&position) == Some(&view) {
+            self.metrics.renders_skipped += 1;
+            return;
+        }
         match self.renderer.render(&view) {
             Ok(key) => {
                 self.metrics.renders += 1;
+                self.last_views.insert(position, view);
                 let mut payloads = HashMap::new();
                 payloads.insert(position, key);
                 self.send(payloads).await;
@@ -775,6 +799,10 @@ impl Runtime {
                 }
                 Err(error) => {
                     tracing::warn!(component = "device", error = %error, "could not send a key");
+                    // The failed keys were recorded in the view cache but never
+                    // reached the deck; drop both caches so the next repaint
+                    // retries them instead of skipping past the stale glass.
+                    self.invalidate_render_caches();
                     return;
                 }
             }
@@ -791,6 +819,9 @@ impl Runtime {
                 }
                 Err(error) => {
                     tracing::warn!(component = "device", error = %error, "could not flush");
+                    // The batch was recorded as sent but never hit the glass;
+                    // drop the caches so the next repaint transmits it again.
+                    self.invalidate_render_caches();
                 }
             }
         }
@@ -963,7 +994,7 @@ impl Runtime {
                     let _ = device.set_brightness(self.state.config.brightness).await;
                 }
                 // Colours or thresholds may have changed, so repaint everything.
-                self.frames.invalidate();
+                self.invalidate_render_caches();
                 self.render().await;
                 tracing::info!(component = "config", "configuration reloaded");
                 Ok(())
@@ -1039,6 +1070,7 @@ impl Runtime {
             "base_page": self.state.navigator.base_page().slug(),
             "panel_open": self.state.navigator.panel_is_open(),
             "renders": self.metrics.renders,
+            "renders_skipped": self.metrics.renders_skipped,
             "frames_sent": sent,
             "frames_skipped": skipped,
             "bytes_sent": bytes,

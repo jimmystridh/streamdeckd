@@ -61,10 +61,11 @@ impl Default for Feeds {
             claude: Cached::new(policy(intervals::USAGE)),
             codex: Cached::new(policy(intervals::USAGE)),
             // Spotify polls fast but only while visible, and never retries slowly:
-            // a closed application is normal, not a failure to back off from.
+            // a closed application is normal, not a failure to back off from. The
+            // cadence is per page; the glance rate is the safe default.
             spotify: Cached::new(CachePolicy::new(
-                millis(intervals::SPOTIFY),
-                millis(intervals::SPOTIFY),
+                millis(intervals::SPOTIFY_GLANCE),
+                millis(intervals::SPOTIFY_GLANCE),
             )),
         }
     }
@@ -257,9 +258,31 @@ impl RuntimeState {
             .collect()
     }
 
+    /// Matches the Spotify poll rate to what is on screen: the transport page
+    /// needs two-second fidelity, the Home glance does not, and every poll is a
+    /// process spawn. Entering the Spotify page also refreshes immediately so
+    /// the transport controls never open showing ten-second-old state.
+    fn apply_spotify_cadence(&mut self) {
+        let on_spotify_page = self.visible_page() == PageId::Spotify;
+        let interval = if on_spotify_page {
+            intervals::SPOTIFY_PAGE
+        } else {
+            intervals::SPOTIFY_GLANCE
+        };
+        let policy = CachePolicy::new(millis(interval), millis(interval));
+
+        if self.feeds.spotify.policy() != policy {
+            self.feeds.spotify.set_policy(policy);
+            if on_spotify_page {
+                self.feeds.spotify.invalidate();
+            }
+        }
+    }
+
     /// Re-derives every refresh deadline for the visible page. Called after a page
     /// change, a successful refresh, and a system wake.
     pub fn schedule_refresh_deadlines(&mut self, now_ms: u64) {
+        self.apply_spotify_cadence();
         for id in IntegrationId::ALL {
             self.deadlines.clear(DeadlineId::Refresh(id));
         }
@@ -567,6 +590,52 @@ mod tests {
         assert_eq!(
             failed.world(now(), 1_000).weather.error(),
             Some("no network")
+        );
+    }
+
+    #[test]
+    fn the_spotify_cadence_follows_the_visible_page() {
+        let mut state = state();
+
+        // On Home only the glance is visible: the slow cadence applies.
+        state.schedule_refresh_deadlines(1_000);
+        assert_eq!(
+            state.feeds.spotify.policy().ttl_ms,
+            millis(intervals::SPOTIFY_GLANCE)
+        );
+
+        // Entering the Spotify page tightens the cadence and refreshes now,
+        // so the transport controls never open showing ten-second-old state.
+        state.feeds.spotify.store(
+            streamdeck_core::integrations::spotify::SpotifyStatus::not_running(),
+            1_000,
+        );
+        state.navigator.go_to(PageId::Spotify);
+        state.schedule_refresh_deadlines(2_000);
+        assert_eq!(
+            state.feeds.spotify.policy().ttl_ms,
+            millis(intervals::SPOTIFY_PAGE)
+        );
+        assert!(
+            state.feeds.spotify.needs_fetch(2_000),
+            "entering the page must refresh immediately"
+        );
+
+        // Returning to Home relaxes it again without discarding the data.
+        state.feeds.spotify.store(
+            streamdeck_core::integrations::spotify::SpotifyStatus::not_running(),
+            3_000,
+        );
+        state.navigator.go_to(PageId::Home);
+        state.schedule_refresh_deadlines(4_000);
+        assert_eq!(
+            state.feeds.spotify.policy().ttl_ms,
+            millis(intervals::SPOTIFY_GLANCE)
+        );
+        assert!(state.feeds.spotify.peek().is_some());
+        assert!(
+            !state.feeds.spotify.needs_fetch(4_000),
+            "leaving the page must not force a refetch"
         );
     }
 

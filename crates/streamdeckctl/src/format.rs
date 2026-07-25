@@ -76,6 +76,11 @@ fn print_status(data: &serde_json::Value) {
     }
     println!("children      {}", number("child_processes"));
     println!(
+        "renders       {} composed, {} skipped as unchanged",
+        number("renders"),
+        number("renders_skipped")
+    );
+    println!(
         "frames        {} sent, {} skipped, {} KiB",
         number("frames_sent"),
         number("frames_skipped"),

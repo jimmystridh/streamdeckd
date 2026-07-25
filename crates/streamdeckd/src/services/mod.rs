@@ -59,7 +59,13 @@ pub mod intervals {
     pub const WEATHER: Duration = Duration::from_secs(30 * 60);
     pub const GITHUB: Duration = Duration::from_secs(5 * 60);
     pub const USAGE: Duration = Duration::from_secs(5 * 60);
-    pub const SPOTIFY: Duration = Duration::from_secs(2);
+    /// On the Spotify page the transport state must track closely.
+    pub const SPOTIFY_PAGE: Duration = Duration::from_secs(2);
+    /// The Home glance only shows track, play state, and artwork; every status
+    /// poll is an `osascript` spawn, and at two seconds those spawns were the
+    /// daemon's dominant idle cost. Ten seconds is imperceptible on a glance —
+    /// and a press refreshes immediately anyway, so interaction stays instant.
+    pub const SPOTIFY_GLANCE: Duration = Duration::from_secs(10);
     /// How long to wait before retrying after a failure, while stale data shows.
     pub const ERROR_RETRY: Duration = Duration::from_secs(5 * 60);
 }
@@ -100,7 +106,8 @@ mod tests {
         assert_eq!(intervals::WEATHER.as_secs(), 1800);
         assert_eq!(intervals::GITHUB.as_secs(), 300);
         assert_eq!(intervals::USAGE.as_secs(), 300);
-        assert_eq!(intervals::SPOTIFY.as_secs(), 2);
+        assert_eq!(intervals::SPOTIFY_PAGE.as_secs(), 2);
+        assert_eq!(intervals::SPOTIFY_GLANCE.as_secs(), 10);
         assert_eq!(intervals::ERROR_RETRY.as_secs(), 300);
     }
 

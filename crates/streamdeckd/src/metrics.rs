@@ -14,6 +14,8 @@ use streamdeck_core::model::IntegrationId;
 pub struct Metrics {
     started: Instant,
     pub renders: u64,
+    /// Compositions avoided because the key's semantic view was unchanged.
+    pub renders_skipped: u64,
     pub frames_sent: u64,
     pub frames_skipped: u64,
     pub bytes_sent: u64,
@@ -48,6 +50,7 @@ impl Metrics {
         Self {
             started: Instant::now(),
             renders: 0,
+            renders_skipped: 0,
             frames_sent: 0,
             frames_skipped: 0,
             bytes_sent: 0,

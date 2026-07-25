@@ -66,10 +66,12 @@ async fn repainting_an_unchanged_page_writes_nothing_to_the_device() {
         0,
         "no writes means no flush; an idle repaint stays free"
     );
+    // The savings moved a layer up: unchanged views now skip composition
+    // entirely instead of being rasterized and then discarded by the hash.
     assert!(
-        harness.runtime.metrics().frames_skipped >= 45,
-        "three repaints of fifteen keys should all be skipped, saw {}",
-        harness.runtime.metrics().frames_skipped
+        harness.runtime.metrics().renders_skipped >= 45,
+        "three repaints of fifteen keys should skip at the view layer, saw {}",
+        harness.runtime.metrics().renders_skipped
     );
 }
 
@@ -390,6 +392,23 @@ async fn a_volume_press_reads_the_level_then_sets_the_new_one() {
         "{:?}",
         harness.commands.calls()
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_state_change_rerenders_only_the_keys_it_touched() {
+    let mut harness = Harness::new(PageId::Pomodoro).await;
+    let baseline = harness.runtime.metrics().renders;
+
+    // Toggling the timer changes the timer and toggle tiles (and the pressed
+    // key's feedback), but must not recompose the twelve untouched keys.
+    harness.press(1, 3).await;
+
+    let composed = harness.runtime.metrics().renders - baseline;
+    assert!(
+        (2..=8).contains(&composed),
+        "expected a handful of recompositions, saw {composed}"
+    );
+    assert!(harness.runtime.metrics().renders_skipped > 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
