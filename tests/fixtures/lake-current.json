@@ -1,0 +1,20 @@
+[
+  {
+    "lakeId": "7C4B1F92AA3D4E10",
+    "lakeName": "Rådasjön",
+    "temperature": 22.1,
+    "timestamp": 1784908800
+  },
+  {
+    "lakeId": "A84041BDC1864B41",
+    "lakeName": "Stensjön",
+    "temperature": 21.3,
+    "timestamp": 1784908800
+  },
+  {
+    "lakeId": "5D9E44C1B7F2A388",
+    "lakeName": "Västra Ingsjön",
+    "temperature": 20.4,
+    "timestamp": 1784907900
+  }
+]

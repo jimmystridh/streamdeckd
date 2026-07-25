@@ -1,0 +1,55 @@
+[package]
+name = "streamdeckd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Headless macOS daemon for a 5x3 Stream Deck"
+
+[lib]
+name = "streamdeckd"
+path = "src/lib.rs"
+
+[[bin]]
+name = "streamdeckd"
+path = "src/main.rs"
+
+[dependencies]
+streamdeck-core.workspace = true
+streamdeck-render.workspace = true
+streamdeck-macos.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+image.workspace = true
+async-trait = "0.1"
+elgato-streamdeck = { version = "0.13", features = ["async"] }
+hidapi = { version = "2", default-features = false, features = ["macos-shared-device"] }
+tokio = { workspace = true, features = [
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "net",
+    "io-util",
+    "sync",
+    "signal",
+    "process",
+    "fs",
+] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "gzip",
+    "http2",
+] }
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,61 @@
+[
+  {
+    "status": "confirmed",
+    "summary": "Ongoing incident bridge",
+    "start": { "dateTime": "2026-07-24T09:00:00Z" },
+    "end": { "dateTime": "2026-07-24T10:00:00Z" },
+    "hangoutLink": "https://meet.google.com/inc-1234-brd"
+  },
+  {
+    "status": "confirmed",
+    "summary": "Sprint planning",
+    "start": { "dateTime": "2026-07-24T12:00:00Z" },
+    "end": { "dateTime": "2026-07-24T13:00:00Z" },
+    "hangoutLink": "https://meet.google.com/abc-defg-hij"
+  },
+  {
+    "status": "confirmed",
+    "summary": "Architecture review",
+    "start": { "dateTime": "2026-07-25T08:00:00Z" },
+    "end": { "dateTime": "2026-07-25T09:00:00Z" },
+    "conferenceData": {
+      "entryPoints": [
+        { "entryPointType": "phone", "uri": "tel:+46-8-000000" },
+        { "entryPointType": "video", "uri": "https://meet.google.com/xyz-1234-abc?authuser=0" }
+      ]
+    }
+  },
+  {
+    "status": "cancelled",
+    "summary": "Cancelled sync",
+    "start": { "dateTime": "2026-07-24T14:00:00Z" },
+    "end": { "dateTime": "2026-07-24T14:30:00Z" },
+    "hangoutLink": "https://meet.google.com/can-1111-cel"
+  },
+  {
+    "status": "confirmed",
+    "summary": "Vacation",
+    "start": { "date": "2026-07-27" },
+    "end": { "date": "2026-08-10" }
+  },
+  {
+    "status": "confirmed",
+    "summary": "Coffee, no link",
+    "start": { "dateTime": "2026-07-24T15:00:00Z" },
+    "end": { "dateTime": "2026-07-24T15:30:00Z" }
+  },
+  {
+    "status": "confirmed",
+    "summary": "Phishy offsite",
+    "start": { "dateTime": "2026-07-24T16:00:00Z" },
+    "end": { "dateTime": "2026-07-24T17:00:00Z" },
+    "hangoutLink": "https://meet.google.com.attacker.example/abc-defg-hij"
+  },
+  {
+    "status": "confirmed",
+    "summary": "Yesterday retro",
+    "start": { "dateTime": "2026-07-23T14:00:00Z" },
+    "end": { "dateTime": "2026-07-23T15:00:00Z" },
+    "hangoutLink": "https://meet.google.com/ret-9999-old"
+  }
+]

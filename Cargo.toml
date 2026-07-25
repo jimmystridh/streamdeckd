@@ -1,0 +1,46 @@
+[workspace]
+members = [
+    "crates/streamdeck-core",
+    "crates/streamdeck-render",
+    "crates/streamdeck-macos",
+    "crates/streamdeckd",
+    "crates/streamdeckctl",
+    "crates/streamdeck-alert",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT"
+repository = "https://github.com/jimmystridh/streamdeckd"
+authors = ["Jimmy Stridh"]
+
+[workspace.dependencies]
+streamdeck-core = { path = "crates/streamdeck-core" }
+streamdeck-render = { path = "crates/streamdeck-render" }
+streamdeck-macos = { path = "crates/streamdeck-macos" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "0.8", default-features = false, features = ["parse", "display"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = "0.10"
+tokio = { version = "1", default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+tiny-skia = "0.11"
+ttf-parser = "0.25"
+rustybuzz = "0.20"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

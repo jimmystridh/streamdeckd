@@ -1,0 +1,44 @@
+{
+  "user_id": "user-fixture",
+  "account_id": "user-fixture",
+  "email": "fixture@example.com",
+  "plan_type": "pro",
+  "rate_limit": {
+    "allowed": true,
+    "limit_reached": false,
+    "primary_window": {
+      "used_percent": 43,
+      "limit_window_seconds": 604800,
+      "reset_after_seconds": 340236,
+      "reset_at": 1785258133
+    },
+    "secondary_window": null
+  },
+  "code_review_rate_limit": null,
+  "additional_rate_limits": [
+    {
+      "limit_name": "GPT-5.3-Codex-Spark",
+      "metered_feature": "codex_bengalfox",
+      "rate_limit": {
+        "allowed": true,
+        "limit_reached": false,
+        "primary_window": {
+          "used_percent": 0,
+          "limit_window_seconds": 604800,
+          "reset_after_seconds": 604800,
+          "reset_at": 1785522697
+        },
+        "secondary_window": null
+      }
+    }
+  ],
+  "credits": {
+    "has_credits": false,
+    "unlimited": false,
+    "overage_limit_reached": false,
+    "balance": "0"
+  },
+  "spend_control": { "reached": false, "individual_limit": null },
+  "rate_limit_reached_type": null,
+  "promo": null
+}

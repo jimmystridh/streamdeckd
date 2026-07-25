@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.jimmystridh.streamdeckd</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PREFIX__/bin/streamdeckd</string>
+    <string>--log-level</string>
+    <string>info</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart only after an abnormal exit. This pairs with the daemon's exit
+       codes: a clean `streamdeckctl stop`, a duplicate start, and a start that
+       cannot claim the device all exit zero, so none of them respawn. Only a real
+       crash or fault exits non-zero and gets restarted. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- launchd refuses to respawn faster than this, which bounds the damage from
+       a crash loop. -->
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+
+  <key>StandardOutPath</key>
+  <string>__LOGS__/launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__LOGS__/launchd.err.log</string>
+
+  <!-- Only the values the daemon actually needs. No inherited shell state. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__PREFIX__</string>
+</dict>
+</plist>

@@ -1,0 +1,25 @@
+[package]
+name = "streamdeck-macos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "macOS adapters for streamdeckd: audio, Spotify, notifications, credentials"
+
+[dependencies]
+streamdeck-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+async-trait = "0.1"
+tokio = { workspace = true, features = ["process", "time", "macros", "rt", "io-util", "sync"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }

@@ -1,0 +1,54 @@
+{
+  "daily": [
+    {
+      "lakeId": "7C4B1F92AA3D4E10",
+      "temperatures": [
+        {
+          "temperature": 22.0,
+          "timestamp": 1784894400
+        }
+      ]
+    },
+    {
+      "lakeId": "A84041BDC1864B41",
+      "temperatures": [
+        {
+          "temperature": 19.8,
+          "timestamp": 1784635200
+        },
+        {
+          "temperature": 21.3,
+          "timestamp": 1784894400
+        },
+        {
+          "temperature": 18.9,
+          "timestamp": 1784462400
+        },
+        {
+          "temperature": 20.9,
+          "timestamp": 1784808000
+        },
+        {
+          "temperature": 17.1,
+          "timestamp": 1784203200
+        },
+        {
+          "temperature": 20.4,
+          "timestamp": 1784721600
+        },
+        {
+          "temperature": 17.6,
+          "timestamp": 1784289600
+        },
+        {
+          "temperature": 19.5,
+          "timestamp": 1784548800
+        },
+        {
+          "temperature": 18.2,
+          "timestamp": 1784376000
+        }
+      ]
+    }
+  ]
+}

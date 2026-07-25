@@ -1,0 +1,21 @@
+[package]
+name = "streamdeck-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Native key renderer for streamdeckd"
+
+[dependencies]
+streamdeck-core.workspace = true
+tiny-skia.workspace = true
+ttf-parser.workspace = true
+image.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
+chrono-tz.workspace = true

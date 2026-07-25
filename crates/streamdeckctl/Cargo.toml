@@ -1,0 +1,21 @@
+[package]
+name = "streamdeckctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Local control and diagnostics for streamdeckd"
+
+[[bin]]
+name = "streamdeckctl"
+path = "src/main.rs"
+
+[dependencies]
+streamdeck-core.workspace = true
+streamdeck-macos.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "time"] }

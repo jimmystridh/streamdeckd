@@ -1,0 +1,84 @@
+# streamdeckd — Command Center configuration template.
+#
+# Installed to ~/Library/Application Support/streamdeckd/config.toml only when no
+# user configuration exists. Reloads are transactional: an invalid edit leaves the
+# previous configuration active and is reported by `streamdeckctl status`.
+
+version = 1
+device_serial = "A00SA5432IDMMF"
+startup_page = "home"
+brightness = 60
+long_press_ms = 600
+temporary_panel_seconds = 10
+blank_on_exit = false
+
+[location]
+name = "Stensjön"
+latitude = 57.6627
+longitude = 12.0341
+timezone = "Europe/Stockholm"
+
+[lake]
+id = "A84041BDC1864B41"
+
+[pomodoro]
+focus_minutes = 25
+short_break_minutes = 5
+long_break_minutes = 15
+long_break_every = 4
+sound = "Glass"
+repeat_sound_seconds = 30
+persistent_alert = true
+
+[meetings]
+accounts = ["jimmy.stridh@gmail.com", "jimmy.stridh@visma.com"]
+horizon_days = 14
+max_events = 100
+meet_app = "~/Applications/Chrome Apps.localized/Google Meet.app"
+
+[github]
+updated_within_days = 30
+item_limit = 100
+
+[[github.repository_aliases]]
+prefix = "visma.administration."
+replacement = "admin."
+
+[usage]
+warning_percent = 50
+critical_percent = 80
+
+[audio]
+native = false
+
+[[audio.output]]
+label = "MacBook"
+exact = "MacBook Pro Speakers"
+
+[[audio.output]]
+label = "Bose"
+exact = "Bose NC 700 Headphones"
+
+[[audio.output]]
+label = "USB Home"
+pattern = "usb"
+
+[[audio.input]]
+label = "MacBook Mic"
+exact = "MacBook Pro Microphone"
+
+[[audio.input]]
+label = "Bose Mic"
+exact = "Bose NC 700 Headphones"
+
+[[audio.input]]
+label = "RØDE Mic"
+pattern = "røde|rode"
+
+[tools]
+gh = "/opt/homebrew/bin/gh"
+gog = "/opt/homebrew/bin/gog"
+switch_audio_source = "/opt/homebrew/bin/SwitchAudioSource"
+osascript = "/usr/bin/osascript"
+afplay = "/usr/bin/afplay"
+open = "/usr/bin/open"

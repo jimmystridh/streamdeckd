@@ -1,0 +1,50 @@
+[
+  {
+    "number": 118,
+    "repository": { "name": "streamdeckd", "nameWithOwner": "jimmystridh/streamdeckd" },
+    "title": "Add golden image suite for the key renderer",
+    "updatedAt": "2026-07-21T09:14:02Z",
+    "url": "https://github.com/jimmystridh/streamdeckd/pull/118"
+  },
+  {
+    "number": 4821,
+    "repository": {
+      "name": "visma.administration.web",
+      "nameWithOwner": "vismaspcs/visma.administration.web"
+    },
+    "title": "Fix invoice rounding on partial credit notes",
+    "updatedAt": "2026-07-24T18:02:41Z",
+    "url": "https://github.com/vismaspcs/visma.administration.web/pull/4821"
+  },
+  {
+    "number": 903,
+    "repository": {
+      "name": "visma.administration.api",
+      "nameWithOwner": "vismaspcs/visma.administration.api"
+    },
+    "title": "Return 409 instead of 500 on concurrent ledger writes",
+    "updatedAt": "2026-07-24T07:38:10Z",
+    "url": "https://github.com/vismaspcs/visma.administration.api/pull/903"
+  },
+  {
+    "number": 41,
+    "repository": { "name": "hemplan", "nameWithOwner": "jimmystridh/hemplan" },
+    "title": "Migrate scheduling to the new deadline queue",
+    "updatedAt": "2026-07-23T21:55:00Z",
+    "url": "https://github.com/jimmystridh/hemplan/pull/41"
+  },
+  {
+    "number": 7,
+    "repository": { "name": "kronan", "nameWithOwner": "jimmystridh/kronan" },
+    "title": "Cache exchange rates for five minutes",
+    "updatedAt": "2026-07-22T11:20:33Z",
+    "url": "https://github.com/jimmystridh/kronan/pull/7"
+  },
+  {
+    "number": 2,
+    "repository": { "name": "iceclimb", "nameWithOwner": "jimmystridh/iceclimb" },
+    "title": "Very long pull request title that will certainly need truncation on a key",
+    "updatedAt": "2026-07-19T05:01:00Z",
+    "url": "https://github.com/jimmystridh/iceclimb/pull/2"
+  }
+]

@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    # The daemon is macOS-only: hidapi, CoreAudio, and AppleScript all are.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: rustup component add rustfmt clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Tests
+        # Golden images and every domain rule run without hardware or network.
+        run: cargo test --workspace
+
+      - name: Golden images are unchanged
+        run: git diff --exit-code -- tests/golden
+
+      - name: Configuration template is valid
+        run: cargo run -p streamdeckd -- --check --config config/command-center.toml
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependency audit
+        # The lockfile is platform independent, so this does not need macOS.
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
