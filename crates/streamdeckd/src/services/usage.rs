@@ -97,9 +97,25 @@ async fn claude_credential(
     security: &str,
     now_ms: i64,
 ) -> Result<ClaudeCredential, UsageError> {
+    resolve_claude_credential(credentials::claude_credential, runner, security, now_ms).await
+}
+
+/// How the Claude payload is read from the Keychain.
+///
+/// Injected because the machine's Keychain contents and its per-binary access
+/// grants are outside this daemon's control. A test that reached the real Keychain
+/// would pass or fail depending on the developer's local grants — and did.
+type KeychainReader = fn(i64) -> Result<ClaudeCredential, CredentialError>;
+
+async fn resolve_claude_credential(
+    read_keychain: KeychainReader,
+    runner: &Arc<dyn CommandRunner>,
+    security: &str,
+    now_ms: i64,
+) -> Result<ClaudeCredential, UsageError> {
     let framework = tokio::time::timeout(
         KEYCHAIN_TIMEOUT,
-        tokio::task::spawn_blocking(move || credentials::claude_credential(now_ms)),
+        tokio::task::spawn_blocking(move || read_keychain(now_ms)),
     )
     .await;
 
@@ -168,31 +184,29 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_missing_claude_credential_is_reported_without_a_request() {
-        // Point HOME at a directory with no credential and no Keychain match.
-        let directory = tempfile::tempdir().expect("temp dir");
-        std::env::set_var("HOME", directory.path());
+    /// Stands in for a Keychain with no Claude entry.
+    fn no_keychain_entry(_now_ms: i64) -> Result<ClaudeCredential, CredentialError> {
+        Err(CredentialError::ClaudeMissing(
+            "/nowhere/.credentials.json".to_string(),
+        ))
+    }
 
-        let client = HttpClient::new().expect("client");
-        // With no credential anywhere and a `security` CLI that finds nothing, the
-        // error names the missing file rather than hanging.
-        let error = fetch_claude(
-            &client,
+    #[tokio::test]
+    async fn a_missing_claude_credential_is_reported_rather_than_hanging() {
+        // Neither the Keychain nor the CLI can produce one.
+        let error = resolve_claude_credential(
+            no_keychain_entry,
             &runner(Reply::fails(44, "SecKeychainSearchCopyNext: not found")),
             "/usr/bin/security",
             0,
         )
         .await
         .expect_err("no credential");
+
         assert!(
             matches!(
                 error,
-                UsageError::Credential(
-                    CredentialError::ClaudeMissing(_)
-                        | CredentialError::ClaudeExpired
-                        | CredentialError::ClaudeKeychainBlocked
-                )
+                UsageError::Credential(CredentialError::ClaudeKeychainBlocked)
             ),
             "{error}"
         );
