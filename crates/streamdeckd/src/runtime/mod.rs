@@ -29,6 +29,7 @@ use streamdeck_render::Renderer;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::alert::{self, AlertContext, AlertState, HelperOutcome};
+use crate::aurora::{ScreensaverCanvas, ScreensaverScene};
 use crate::device::{DeckDevice, DeviceError, FrameCache, KeyEvent};
 use crate::logging::LevelControl;
 use crate::metrics::Metrics;
@@ -53,6 +54,7 @@ pub enum RuntimeEvent {
     },
     ConfigChanged,
     SystemWoke,
+    ScreenLockChanged(bool),
     HelperOutcome(HelperOutcome),
     Control {
         request: Request,
@@ -97,6 +99,11 @@ pub struct Runtime {
     /// Wall clock and monotonic clock at the last loop pass, for sleep detection.
     last_wall_ms: i64,
     last_mono_ms: u64,
+    screen_locked: bool,
+    screensaver_started_ms: u64,
+    screensaver_next_frame_ms: u64,
+    screensaver_scene: ScreensaverScene,
+    next_screensaver_scene: ScreensaverScene,
     /// Set when the loop should exit.
     stopping: bool,
 }
@@ -105,6 +112,8 @@ pub struct Runtime {
 const SLEEP_DETECTION_MS: i64 = 5_000;
 /// The longest the loop sleeps while a timer is running, so a wake is noticed.
 const MAX_TIMED_SLEEP_MS: u64 = 60_000;
+const SCREENSAVER_FRAME_MS: u64 = 50;
+const SCREENSAVER_FADE_IN_MS: u64 = 1_200;
 
 impl Runtime {
     pub fn new(
@@ -131,12 +140,22 @@ impl Runtime {
             origin,
             last_wall_ms: Utc::now().timestamp_millis(),
             last_mono_ms: 0,
+            screen_locked: false,
+            screensaver_started_ms: 0,
+            screensaver_next_frame_ms: 0,
+            screensaver_scene: ScreensaverScene::Aurora,
+            next_screensaver_scene: ScreensaverScene::Aurora,
             stopping: false,
         }
     }
 
     pub fn with_level_control(mut self, level: LevelControl) -> Self {
         self.level = Some(level);
+        self
+    }
+
+    pub fn with_screen_locked(mut self, screen_locked: bool) -> Self {
+        self.screen_locked = screen_locked;
         self
     }
 
@@ -172,7 +191,12 @@ impl Runtime {
         self.state.schedule_refresh_deadlines(now_ms);
         self.state.schedule_pomodoro_deadlines(Utc::now(), now_ms);
         self.spawn_due_refreshes(now_ms);
-        self.render().await;
+        if self.screen_locked {
+            self.begin_screensaver(now_ms);
+            self.render_screensaver().await;
+        } else {
+            self.render().await;
+        }
         Ok(())
     }
 
@@ -245,6 +269,7 @@ impl Runtime {
 
     async fn handle(&mut self, event: RuntimeEvent) {
         match event {
+            RuntimeEvent::Key(_) if self.screen_locked => {}
             RuntimeEvent::Key(KeyEvent::Down(position)) => self.key_down(position).await,
             RuntimeEvent::Key(KeyEvent::Up(position)) => self.key_up(position).await,
             RuntimeEvent::DeviceDisconnected => {
@@ -260,7 +285,11 @@ impl Runtime {
                 if let Some(device) = &self.device {
                     let _ = device.set_brightness(self.state.config.brightness).await;
                 }
-                self.render().await;
+                if self.screen_locked {
+                    self.render_screensaver().await;
+                } else {
+                    self.render().await;
+                }
             }
             RuntimeEvent::Refreshed(id, result) => self.apply_refresh(id, result).await,
             RuntimeEvent::ActionFinished(outcome) => self.apply_action_outcome(outcome).await,
@@ -286,6 +315,9 @@ impl Runtime {
                 let _ = self.reload_config().await;
             }
             RuntimeEvent::SystemWoke => self.wake().await,
+            RuntimeEvent::ScreenLockChanged(screen_locked) => {
+                self.set_screen_locked(screen_locked).await
+            }
             RuntimeEvent::HelperOutcome(outcome) => self.helper_outcome(outcome).await,
             RuntimeEvent::Control { request, reply } => self.control(request, reply).await,
             RuntimeEvent::Shutdown => self.stopping = true,
@@ -313,6 +345,11 @@ impl Runtime {
                         }
                     }
                     repaint = true;
+                }
+                DeadlineId::ScreensaverFrame => {
+                    if self.screen_locked {
+                        self.render_screensaver().await;
+                    }
                 }
                 DeadlineId::LongPressArm => {
                     for outcome in self.state.presses.poll_arm(now_ms) {
@@ -382,7 +419,77 @@ impl Runtime {
             self.state.feeds.invalidate(id);
         }
         self.spawn_due_refreshes(now_ms);
-        self.render().await;
+        if self.screen_locked {
+            self.screensaver_next_frame_ms = now_ms;
+            self.render_screensaver().await;
+        } else {
+            self.render().await;
+        }
+    }
+
+    fn begin_screensaver(&mut self, now_ms: u64) {
+        self.screen_locked = true;
+        self.screensaver_started_ms = now_ms;
+        self.screensaver_next_frame_ms = now_ms;
+        self.screensaver_scene = self.next_screensaver_scene;
+        self.next_screensaver_scene = self.next_screensaver_scene.next();
+        self.state.presses.clear();
+        self.invalidate_render_caches();
+        self.state
+            .deadlines
+            .set(DeadlineId::ScreensaverFrame, now_ms);
+        tracing::info!(
+            component = "screensaver",
+            fps = 20,
+            scene = self.screensaver_scene.name(),
+            "screen locked"
+        );
+    }
+
+    async fn set_screen_locked(&mut self, screen_locked: bool) {
+        if screen_locked == self.screen_locked {
+            return;
+        }
+
+        if screen_locked {
+            self.begin_screensaver(self.now_ms());
+            self.render_screensaver().await;
+        } else {
+            self.screen_locked = false;
+            self.state.deadlines.clear(DeadlineId::ScreensaverFrame);
+            self.invalidate_render_caches();
+            tracing::info!(component = "screensaver", "screen unlocked");
+            self.render().await;
+        }
+    }
+
+    async fn render_screensaver(&mut self) {
+        if !self.screen_locked {
+            return;
+        }
+
+        let elapsed_ms = self.now_ms().saturating_sub(self.screensaver_started_ms);
+        let fade = (elapsed_ms as f32 / SCREENSAVER_FADE_IN_MS as f32).clamp(0.0, 1.0);
+        let intensity = fade * fade * (3.0 - 2.0 * fade);
+        let canvas = ScreensaverCanvas::render(
+            self.screensaver_scene,
+            elapsed_ms as f32 / 1_000.0,
+            intensity,
+        );
+        self.send(canvas.rendered_keys()).await;
+
+        let now_ms = self.now_ms();
+        let candidate = self
+            .screensaver_next_frame_ms
+            .saturating_add(SCREENSAVER_FRAME_MS);
+        let next = if candidate > now_ms {
+            candidate
+        } else {
+            let missed = (now_ms - candidate) / SCREENSAVER_FRAME_MS + 1;
+            candidate.saturating_add(missed.saturating_mul(SCREENSAVER_FRAME_MS))
+        };
+        self.screensaver_next_frame_ms = next;
+        self.state.deadlines.set(DeadlineId::ScreensaverFrame, next);
     }
 
     // --- press handling -----------------------------------------------------
@@ -707,6 +814,10 @@ impl Runtime {
     // --- rendering ----------------------------------------------------------
 
     async fn render(&mut self) {
+        if self.screen_locked {
+            return;
+        }
+
         let now_ms = self.now_ms();
         let world = self.state.world(Utc::now(), now_ms);
         let context = RenderContext::new(&world)
@@ -738,6 +849,10 @@ impl Runtime {
 
     /// Renders a single key, for immediate press feedback.
     async fn render_key(&mut self, position: KeyPosition) {
+        if self.screen_locked {
+            return;
+        }
+
         let now_ms = self.now_ms();
         let world = self.state.world(Utc::now(), now_ms);
         let context = RenderContext::new(&world)
@@ -1069,6 +1184,8 @@ impl Runtime {
             "page": self.state.visible_page().slug(),
             "base_page": self.state.navigator.base_page().slug(),
             "panel_open": self.state.navigator.panel_is_open(),
+            "screen_locked": self.screen_locked,
+            "screensaver": self.screen_locked.then(|| self.screensaver_scene.name()),
             "renders": self.metrics.renders,
             "renders_skipped": self.metrics.renders_skipped,
             "frames_sent": sent,
@@ -1135,5 +1252,13 @@ impl Runtime {
 
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    pub fn screen_locked(&self) -> bool {
+        self.screen_locked
+    }
+
+    pub fn screensaver_scene(&self) -> Option<&'static str> {
+        self.screen_locked.then(|| self.screensaver_scene.name())
     }
 }

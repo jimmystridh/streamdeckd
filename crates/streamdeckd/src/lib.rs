@@ -4,6 +4,7 @@
 //! device, and the control client can all be driven from integration tests.
 
 pub mod alert;
+pub mod aurora;
 pub mod control;
 pub mod device;
 pub mod doctor;

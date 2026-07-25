@@ -10,6 +10,7 @@ pub mod credentials;
 pub mod fake;
 pub mod meet;
 pub mod notify;
+pub mod session;
 pub mod spotify;
 
 pub use command::{CommandError, CommandRunner, Output, SystemCommandRunner};

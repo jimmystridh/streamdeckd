@@ -73,6 +73,14 @@ Installed files:
 The daemon will not start while another application owns the device. Quit Elgato
 Stream Deck or OpenDeck first; `streamdeckd` never kills them for you.
 
+When the Mac locks, streamdeckd keeps ownership of the device and replaces the
+current page with a native 15-key screensaver at 20 FPS. Each new lock session
+selects the next scene—aurora, Matrix-style code rain, then a warp-speed
+starfield—and keeps it until the Mac unlocks. Unlocking restores the page
+that was visible before the lock. Session state is checked directly through
+Core Graphics once per second while unlocked; Elgato and OpenDeck are never
+started.
+
 ## Migrating from the Elgato plugin
 
 ```sh

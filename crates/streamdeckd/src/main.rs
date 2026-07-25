@@ -176,8 +176,10 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
 
     let (sender, receiver) = mpsc::unbounded_channel();
     let state = runtime::state::RuntimeState::new(Arc::clone(&config), store, persistent);
+    let screen_locked = streamdeck_macos::session::screen_is_locked();
     let mut daemon = Runtime::new(state, services, Renderer::new()?, receiver, sender.clone())
-        .with_level_control(level);
+        .with_level_control(level)
+        .with_screen_locked(screen_locked);
 
     // Claim the control socket before touching any hardware. Binding is what
     // enforces one instance per user, so doing it second would mean a duplicate
@@ -261,6 +263,7 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
 
     // Configuration watcher: an edit reloads transactionally.
     let watcher = spawn_config_watcher(config_file.clone(), sender.clone());
+    let screen_lock_monitor = spawn_screen_lock_monitor(screen_locked, sender.clone());
 
     // Signals.
     let signal_sender = sender.clone();
@@ -285,11 +288,13 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     // Cancel every helper task and wait briefly so nothing outlives this process.
     input.abort();
     control.abort();
+    screen_lock_monitor.abort();
     signals.abort();
     drop(watcher);
     let _ = tokio::time::timeout(std::time::Duration::from_millis(500), async {
         let _ = input.await;
         let _ = control.await;
+        let _ = screen_lock_monitor.await;
     })
     .await;
 
@@ -303,6 +308,28 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     }
     tracing::info!(component = "runtime", "stopped");
     result.map(|()| Outcome::Completed)
+}
+
+fn spawn_screen_lock_monitor(
+    initial_state: bool,
+    events: mpsc::UnboundedSender<RuntimeEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut previous = initial_state;
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let current = streamdeck_macos::session::screen_is_locked();
+            if current != previous {
+                previous = current;
+                if events
+                    .send(RuntimeEvent::ScreenLockChanged(current))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    })
 }
 
 /// Watches the configuration file and asks the runtime to reload on change.

@@ -76,6 +76,105 @@ async fn repainting_an_unchanged_page_writes_nothing_to_the_device() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn locking_animates_all_keys_and_unlocking_restores_the_page() {
+    let mut harness = Harness::new(PageId::Home).await;
+    harness.device.reset();
+
+    harness
+        .events
+        .send(RuntimeEvent::ScreenLockChanged(true))
+        .expect("sent");
+    harness
+        .settle_for(std::time::Duration::from_millis(240))
+        .await;
+
+    assert!(harness.runtime.screen_locked());
+    assert_eq!(harness.runtime.screensaver_scene(), Some("aurora"));
+    assert!(
+        harness.device.flushes() >= 4,
+        "the screensaver should approach a 50 ms frame cadence"
+    );
+    let animated_positions: std::collections::HashSet<_> =
+        harness.device.keys_sent().into_iter().collect();
+    assert_eq!(
+        animated_positions.len(),
+        15,
+        "every physical key participates in the virtual canvas"
+    );
+    assert!(harness
+        .runtime
+        .state()
+        .deadlines
+        .get(streamdeck_core::deadline::DeadlineId::ScreensaverFrame)
+        .is_some());
+
+    harness.device.reset();
+    harness
+        .events
+        .send(RuntimeEvent::ScreenLockChanged(false))
+        .expect("sent");
+    harness.settle().await;
+
+    assert!(!harness.runtime.screen_locked());
+    assert_eq!(harness.runtime.screensaver_scene(), None);
+    assert_eq!(harness.page(), PageId::Home);
+    assert_eq!(
+        harness.device.keys_sent().len(),
+        15,
+        "unlocking must repaint the complete saved page"
+    );
+    assert_eq!(
+        harness
+            .runtime
+            .state()
+            .deadlines
+            .get(streamdeck_core::deadline::DeadlineId::ScreensaverFrame),
+        None
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_new_lock_uses_the_next_scene_and_keeps_it_for_the_session() {
+    let mut harness = Harness::new(PageId::Home).await;
+
+    for expected in ["aurora", "matrix", "space", "aurora"] {
+        harness
+            .events
+            .send(RuntimeEvent::ScreenLockChanged(true))
+            .expect("lock sent");
+        harness
+            .settle_for(std::time::Duration::from_millis(180))
+            .await;
+
+        assert_eq!(harness.runtime.screensaver_scene(), Some(expected));
+
+        harness
+            .events
+            .send(RuntimeEvent::ScreenLockChanged(false))
+            .expect("unlock sent");
+        harness.settle().await;
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deck_presses_are_ignored_while_the_screen_is_locked() {
+    let mut harness = Harness::new(PageId::Home).await;
+    harness
+        .events
+        .send(RuntimeEvent::ScreenLockChanged(true))
+        .expect("sent");
+    harness.settle().await;
+
+    harness.press(2, 3).await;
+
+    assert_eq!(harness.page(), PageId::Home);
+    assert_eq!(
+        harness.runtime.state().persistent.pomodoro.status,
+        Status::Ready
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn pressed_feedback_writes_the_key_down_and_back_up_again() {
     let mut harness = Harness::new(PageId::Pomodoro).await;
     harness.device.reset();

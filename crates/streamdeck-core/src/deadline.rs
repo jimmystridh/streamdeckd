@@ -15,6 +15,8 @@ pub enum DeadlineId {
     PomodoroCompletion,
     /// Repaint a visible countdown (Pomodoro timer, panel countdown).
     CountdownTick,
+    /// Draw the next lock-screen animation frame.
+    ScreensaverFrame,
     /// A held key reaches the long-press threshold.
     LongPressArm,
     /// The temporary panel returns to its base page.
@@ -34,6 +36,7 @@ impl DeadlineId {
         match self {
             DeadlineId::PomodoroCompletion => "pomodoro-completion".to_string(),
             DeadlineId::CountdownTick => "countdown-tick".to_string(),
+            DeadlineId::ScreensaverFrame => "screensaver-frame".to_string(),
             DeadlineId::LongPressArm => "long-press-arm".to_string(),
             DeadlineId::PanelDismiss => "panel-dismiss".to_string(),
             DeadlineId::MeetingLabels => "meeting-labels".to_string(),
@@ -280,5 +283,6 @@ mod tests {
             DeadlineId::Refresh(IntegrationId::GitHub).describe(),
             "refresh:github"
         );
+        assert_eq!(DeadlineId::ScreensaverFrame.describe(), "screensaver-frame");
     }
 }
