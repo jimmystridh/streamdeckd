@@ -95,7 +95,7 @@ pub enum Tile {
     /// Navigation key back to Home.
     HomeButton,
     MixerSummary,
-    ClaudeCombined,
+    CodexFiveHour,
     ClaudeFiveHour,
     ClaudeSevenDay,
     CodexUsage,
@@ -211,8 +211,8 @@ fn home() -> Vec<KeyBinding> {
         KeyBinding::new(
             1,
             2,
-            Tile::ClaudeCombined,
-            Refresh(IntegrationId::ClaudeUsage),
+            Tile::CodexFiveHour,
+            Refresh(IntegrationId::CodexUsage),
         ),
         KeyBinding::new(1, 3, Tile::CodexUsage, Refresh(IntegrationId::CodexUsage)),
         KeyBinding::new(
@@ -687,7 +687,7 @@ mod tests {
         };
 
         assert_eq!(tile(1, 1), Some(Tile::MixerSummary));
-        assert_eq!(tile(1, 2), Some(Tile::ClaudeCombined));
+        assert_eq!(tile(1, 2), Some(Tile::CodexFiveHour));
         assert_eq!(tile(1, 3), Some(Tile::CodexUsage));
         assert_eq!(tile(1, 4), Some(Tile::ClaudeFiveHour));
         assert_eq!(tile(1, 5), Some(Tile::ClaudeSevenDay));

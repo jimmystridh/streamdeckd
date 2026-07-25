@@ -156,7 +156,11 @@ fn healthy() -> WorldView {
             window_seconds: 604_800,
             resets_at: Some(now() + Duration::days(4)),
         }),
-        secondary: None,
+        secondary: Some(CodexWindow {
+            percent: 12.0,
+            window_seconds: 18_000,
+            resets_at: Some(now() + Duration::minutes(95)),
+        }),
         limit_reached: false,
     });
     world.spotify = Feed::Ready(
@@ -719,7 +723,7 @@ fn usage_tiles_cover_every_severity() {
         });
         let context = RenderContext::new(&world);
 
-        for (row, tile) in [Tile::ClaudeCombined, Tile::CodexUsage]
+        for (row, tile) in [Tile::ClaudeFiveHour, Tile::CodexUsage]
             .into_iter()
             .enumerate()
         {

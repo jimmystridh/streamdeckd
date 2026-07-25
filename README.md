@@ -21,7 +21,8 @@ alternatives expensive.
 
 Six pages, coordinates as `row,column`, one-based.
 
-**Home** — mixer summary, Claude combined/5h/7d and Codex usage, Spotify glance
+**Home** — mixer summary, Codex 5-hour and overall usage, Claude 5-hour and
+7-day usage, Spotify glance
 (hold for the Spotify page), GitHub summary, Pomodoro glance (hold for the
 Pomodoro page), the next two meetings, current and tomorrow's Stensjön weather,
 and the lake water temperature (opens a temporary panel).

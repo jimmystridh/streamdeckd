@@ -61,7 +61,7 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
             .header("HOME")
             .footer("BACK"),
         Tile::MixerSummary => mixer_summary(world),
-        Tile::ClaudeCombined => claude_combined(world),
+        Tile::CodexFiveHour => codex_five_hour(world),
         Tile::ClaudeFiveHour => claude_window(world, false),
         Tile::ClaudeSevenDay => claude_window(world, true),
         Tile::CodexUsage => codex_usage(world),
@@ -139,23 +139,30 @@ fn mixer_summary(world: &WorldView) -> KeyView {
         .status(world.audio.status())
 }
 
-fn claude_combined(world: &WorldView) -> KeyView {
-    let Some(usage) = world.claude.value() else {
-        return offline_or_loading(&world.claude, "CLAUDE", "USAGE OFFLINE");
+/// The Codex five-hour tile. The endpoint omits this window when it is not
+/// currently applicable, so a missing window is quiet rather than an error.
+fn codex_five_hour(world: &WorldView) -> KeyView {
+    let Some(usage) = world.codex.value() else {
+        return offline_or_loading(&world.codex, "CODEX", "USAGE OFFLINE");
     };
-    let Some((window_label, window)) = usage.binding_window() else {
-        return KeyView::error("CLAUDE", "NO WINDOW");
+    let Some(window) = usage.five_hour() else {
+        return KeyView::solid(theme::DISABLED)
+            .header("CODEX")
+            .header_right("5H")
+            .value("—", 34.0)
+            .footer("NO DATA")
+            .status(KeyStatus::Disabled);
     };
     let (warning, critical) = world.usage_thresholds;
     let severity = UsageSeverity::of(window.percent, warning, critical);
 
     usage_tile(
-        "CLAUDE",
-        window_label,
+        "CODEX",
+        "5H",
         window.percent,
         &window.reset_label(world.now),
-        theme::usage(severity, theme::CLAUDE),
-        world.claude.status(),
+        theme::usage(severity, theme::CODEX),
+        world.codex.status(),
     )
 }
 
@@ -1321,11 +1328,11 @@ mod tests {
             }),
         });
 
-        let combined = view(Tile::ClaudeCombined, &world);
-        assert_eq!(combined.value.expect("value").text, "91%");
-        assert_eq!(combined.header_right.expect("window").text, "5H");
-        assert_eq!(combined.footer_center.expect("footer").text, "RESET 1H 30M");
-        assert_eq!(combined.background.representative(), theme::CRITICAL);
+        let five = view(Tile::ClaudeFiveHour, &world);
+        assert_eq!(five.value.expect("value").text, "91%");
+        assert_eq!(five.header_right.expect("window").text, "5H");
+        assert_eq!(five.footer_center.expect("footer").text, "RESET 1H 30M");
+        assert_eq!(five.background.representative(), theme::CRITICAL);
 
         let seven = view(Tile::ClaudeSevenDay, &world);
         assert_eq!(seven.header.expect("header").text, "CLAUDE");
@@ -1348,6 +1355,47 @@ mod tests {
         let view = view(Tile::ClaudeSevenDay, &world);
         assert_eq!(view.status, KeyStatus::Disabled);
         assert_eq!(view.value.expect("value").text, "—");
+    }
+
+    #[test]
+    fn the_codex_five_hour_tile_shows_its_window_or_a_quiet_placeholder() {
+        let mut world = world();
+        // The live payload has been seen with only the weekly window.
+        world.codex = Feed::Ready(CodexUsage {
+            plan: Some("pro".to_string()),
+            primary: Some(CodexWindow {
+                percent: 44.0,
+                window_seconds: 604_800,
+                resets_at: None,
+            }),
+            secondary: None,
+            limit_reached: false,
+        });
+        let missing = view(Tile::CodexFiveHour, &world);
+        assert_eq!(missing.status, KeyStatus::Disabled);
+        assert_eq!(missing.value.expect("value").text, "—");
+        assert_eq!(missing.header_right.expect("window").text, "5H");
+
+        world.codex = Feed::Ready(CodexUsage {
+            plan: Some("pro".to_string()),
+            primary: Some(CodexWindow {
+                percent: 44.0,
+                window_seconds: 604_800,
+                resets_at: None,
+            }),
+            secondary: Some(CodexWindow {
+                percent: 61.0,
+                window_seconds: 18_000,
+                resets_at: Some(now() + chrono::Duration::minutes(150)),
+            }),
+            limit_reached: false,
+        });
+        let present = view(Tile::CodexFiveHour, &world);
+        assert_eq!(present.header.expect("header").text, "CODEX");
+        assert_eq!(present.header_right.expect("window").text, "5H");
+        assert_eq!(present.value.expect("value").text, "61%");
+        assert_eq!(present.footer_center.expect("footer").text, "RESET 2H 30M");
+        assert_eq!(present.background.representative(), theme::WARNING);
     }
 
     #[test]

@@ -57,6 +57,18 @@ pub struct CodexUsage {
 }
 
 impl CodexUsage {
+    /// The short (five-hour) window, when the payload carries one.
+    ///
+    /// Classified by duration rather than position: the live API has been seen
+    /// returning the weekly window as `primary_window`, and it omits the short
+    /// window entirely when it is not currently applicable.
+    pub fn five_hour(&self) -> Option<CodexWindow> {
+        [self.primary, self.secondary]
+            .into_iter()
+            .flatten()
+            .find(|window| window.window_seconds < 24 * 3600)
+    }
+
     /// The window the tile shows: whichever is closest to its limit.
     pub fn binding(&self) -> Option<CodexWindow> {
         match (self.primary, self.secondary) {
@@ -215,6 +227,43 @@ mod tests {
         };
         assert_eq!(usage.percent(), Some(88.0));
         assert_eq!(usage.binding().expect("binding").window_label(), "5H");
+    }
+
+    #[test]
+    fn the_five_hour_window_is_found_by_duration_in_either_position() {
+        let five_hour = CodexWindow {
+            percent: 61.0,
+            window_seconds: 18_000,
+            resets_at: None,
+        };
+        let weekly = CodexWindow {
+            percent: 44.0,
+            window_seconds: 604_800,
+            resets_at: None,
+        };
+
+        let as_secondary = CodexUsage {
+            plan: None,
+            primary: Some(weekly),
+            secondary: Some(five_hour),
+            limit_reached: false,
+        };
+        assert_eq!(as_secondary.five_hour(), Some(five_hour));
+
+        let as_primary = CodexUsage {
+            primary: Some(five_hour),
+            secondary: Some(weekly),
+            ..as_secondary.clone()
+        };
+        assert_eq!(as_primary.five_hour(), Some(five_hour));
+
+        // The live payload has been seen with only the weekly window.
+        let weekly_only = CodexUsage {
+            primary: Some(weekly),
+            secondary: None,
+            ..as_secondary.clone()
+        };
+        assert_eq!(weekly_only.five_hour(), None);
     }
 
     #[test]
