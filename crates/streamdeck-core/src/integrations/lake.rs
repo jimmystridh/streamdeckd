@@ -108,7 +108,7 @@ pub fn parse_history(
         .iter()
         .filter_map(|entry| reading_from(entry, now))
         .collect();
-    days.sort_by(|left, right| right.measured_at.cmp(&left.measured_at));
+    days.sort_by_key(|reading| std::cmp::Reverse(reading.measured_at));
     days.truncate(HISTORY_DAYS);
 
     if days.is_empty() {

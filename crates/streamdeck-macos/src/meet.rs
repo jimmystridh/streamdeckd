@@ -158,8 +158,10 @@ mod tests {
 
     #[tokio::test]
     async fn with_no_window_to_raise_the_pwa_is_opened_with_the_meeting_url() {
-        let _guard = crate::env_lock();
-        std::env::set_var("HOME", "/Users/tester");
+        {
+            let _guard = crate::env_lock();
+            std::env::set_var("HOME", "/Users/tester");
+        }
         let runner = Arc::new(FakeCommandRunner::new());
         runner
             .on(FOCUS_NEEDLE, Reply::ok("not-found\n"))
@@ -198,8 +200,10 @@ mod tests {
 
     #[tokio::test]
     async fn query_parameters_are_stripped_before_the_url_is_handed_to_the_system() {
-        let _guard = crate::env_lock();
-        std::env::set_var("HOME", "/Users/tester");
+        {
+            let _guard = crate::env_lock();
+            std::env::set_var("HOME", "/Users/tester");
+        }
         let runner = Arc::new(FakeCommandRunner::new());
         runner
             .on(FOCUS_NEEDLE, Reply::ok("not-found\n"))
