@@ -353,7 +353,7 @@ async fn reload_reports_a_missing_or_invalid_configuration_without_changing_anyt
 
     let bad = directory.path().join("bad.toml");
     std::fs::write(&bad, "version = 1\nbrightness = 500\n").expect("write");
-    std::env::set_var("STREAMDECKD_CONFIG", &bad);
+    harness.runtime.state_mut().config_path = bad;
 
     let before = harness.runtime.state().config.brightness;
     let response = ask(&mut harness, &path, Request::Reload).await;
@@ -365,8 +365,6 @@ async fn reload_reports_a_missing_or_invalid_configuration_without_changing_anyt
         before,
         "an invalid reload must leave the previous configuration active"
     );
-
-    std::env::remove_var("STREAMDECKD_CONFIG");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -375,16 +373,13 @@ async fn reload_applies_a_valid_configuration() {
     let (path, directory) = serve(&harness).await;
 
     let good = directory.path().join("good.toml");
-    let mut text = streamdeck_core::config::TEMPLATE.to_string();
-    text = text.replace("brightness = 60", "brightness = 85");
+    let text = streamdeck_core::config::TEMPLATE.replace("brightness = 60", "brightness = 85");
     std::fs::write(&good, &text).expect("write");
-    std::env::set_var("STREAMDECKD_CONFIG", &good);
+    harness.runtime.state_mut().config_path = good;
 
     let response = ask(&mut harness, &path, Request::Reload).await;
     assert!(response.is_ok(), "{response:?}");
     assert_eq!(harness.runtime.state().config.brightness, 85);
-
-    std::env::remove_var("STREAMDECKD_CONFIG");
 }
 
 #[tokio::test(flavor = "multi_thread")]

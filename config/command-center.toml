@@ -5,7 +5,8 @@
 # previous configuration active and is reported by `streamdeckctl status`.
 
 version = 1
-device_serial = "A00SA5432IDMMF"
+# Optional: set this in a local config when multiple decks are connected.
+# device_serial = "your-device-serial"
 startup_page = "home"
 brightness = 60
 long_press_ms = 600
@@ -31,7 +32,8 @@ repeat_sound_seconds = 30
 persistent_alert = true
 
 [meetings]
-accounts = ["jimmy.stridh@gmail.com", "jimmy.stridh@visma.com"]
+# Add calendar accounts in a local config if desired.
+accounts = []
 horizon_days = 14
 max_events = 100
 meet_app = "~/Applications/Chrome Apps.localized/Google Meet.app"

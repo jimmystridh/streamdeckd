@@ -84,7 +84,7 @@ impl Inputs {
     ) -> Self {
         Self {
             config: Arc::clone(&state.config),
-            config_path: crate::config_path(),
+            config_path: state.config_path.clone(),
             state_path: state.store.path().to_path_buf(),
             device: device.map(|device| {
                 let descriptor = device.descriptor();
@@ -332,6 +332,7 @@ mod tests {
 
     #[test]
     fn a_missing_launch_agent_is_a_warning_rather_than_a_failure() {
+        let _guard = crate::env_lock();
         std::env::set_var("HOME", "/nonexistent-home");
         assert_eq!(launch_agent_check().health, Health::Warn);
     }

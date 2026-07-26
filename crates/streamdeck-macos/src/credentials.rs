@@ -366,6 +366,7 @@ mod tests {
 
     #[test]
     fn an_empty_override_falls_back_to_the_default_path() {
+        let _guard = crate::env_lock();
         std::env::set_var("HOME", "/nonexistent-home");
         let error = codex_credential(Some("   ")).expect_err("missing");
         assert!(error.to_string().contains(".codex/auth.json"), "{error}");

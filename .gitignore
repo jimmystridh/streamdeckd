@@ -1,2 +1,13 @@
 /target
 *.actual.png
+
+# Local configuration and runtime state
+config/command-center.local.toml
+*.local.toml
+state.json
+*.sock
+
+# Local credential/configuration files
+.env
+.env.*
+!.env.example

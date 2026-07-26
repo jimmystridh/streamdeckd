@@ -92,6 +92,7 @@ impl Harness {
 
         let mut state = RuntimeState::new(
             Arc::clone(&config),
+            directory.path().join("config.toml"),
             StateStore::new(store.path()),
             persistent,
         );

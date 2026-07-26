@@ -493,7 +493,12 @@ mod tests {
         let directory = tempfile::tempdir().expect("temp dir");
         let store = StateStore::new(directory.path().join("state.json"));
         std::mem::forget(directory);
-        RuntimeState::new(config, store, PersistentState::default())
+        RuntimeState::new(
+            config,
+            "/nonexistent/streamdeckd-test.toml",
+            store,
+            PersistentState::default(),
+        )
     }
 
     fn now() -> DateTime<Utc> {

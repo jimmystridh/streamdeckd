@@ -68,12 +68,24 @@ pub fn describe(duration: Duration) -> String {
     }
 }
 
+/// Serialises the tests that set `HOME`.
+///
+/// `HOME` is process-global, so two parallel tests pointing it at different
+/// directories corrupt each other's expectations — which they did. Any test that
+/// mutates it holds this lock for its duration.
+#[cfg(test)]
+pub(crate) fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn home_expansion_only_touches_a_leading_tilde() {
+        let _guard = env_lock();
         std::env::set_var("HOME", "/Users/tester");
         assert_eq!(
             expand_home("~/Applications/x.app"),
@@ -86,6 +98,7 @@ mod tests {
 
     #[test]
     fn the_owned_directories_live_under_the_users_library() {
+        let _guard = env_lock();
         std::env::set_var("HOME", "/Users/tester");
         assert_eq!(
             support_dir().to_string_lossy(),

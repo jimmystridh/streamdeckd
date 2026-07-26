@@ -1097,7 +1097,7 @@ impl Runtime {
     }
 
     async fn reload_config(&mut self) -> Result<(), String> {
-        let path = crate::config_path();
+        let path = self.state.config_path.clone();
         match streamdeck_core::config::Config::load(&path) {
             Ok(config) => {
                 self.state.apply_config(Arc::new(config));

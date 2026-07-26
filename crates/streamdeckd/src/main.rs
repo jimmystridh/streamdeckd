@@ -175,7 +175,8 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     };
 
     let (sender, receiver) = mpsc::unbounded_channel();
-    let state = runtime::state::RuntimeState::new(Arc::clone(&config), store, persistent);
+    let state =
+        runtime::state::RuntimeState::new(Arc::clone(&config), &config_file, store, persistent);
     let screen_locked = streamdeck_macos::session::screen_is_locked();
     let mut daemon = Runtime::new(state, services, Renderer::new()?, receiver, sender.clone())
         .with_level_control(level)

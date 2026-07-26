@@ -137,6 +137,12 @@ impl Feeds {
 /// Everything the coordinator owns between events.
 pub struct RuntimeState {
     pub config: Arc<Config>,
+    /// Where a reload re-reads configuration from.
+    ///
+    /// Held here rather than read from a process-global on each reload: two
+    /// parallel tests pointing the same global at different files made one read
+    /// the other's deliberately-broken config.
+    pub config_path: std::path::PathBuf,
     pub timezone: Tz,
     pub store: StateStore,
     pub persistent: PersistentState,
@@ -157,7 +163,12 @@ pub struct RuntimeState {
 }
 
 impl RuntimeState {
-    pub fn new(config: Arc<Config>, store: StateStore, persistent: PersistentState) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        config_path: impl Into<std::path::PathBuf>,
+        store: StateStore,
+        persistent: PersistentState,
+    ) -> Self {
         let timezone = config.location.timezone();
         let navigator = Navigator::new(
             persistent.active_page,
@@ -170,6 +181,7 @@ impl RuntimeState {
 
         Self {
             config,
+            config_path: config_path.into(),
             timezone,
             store,
             persistent,
@@ -366,7 +378,12 @@ mod tests {
         let store = StateStore::new(directory.path().join("state.json"));
         // Leak the directory so the store's path stays valid for the test's life.
         std::mem::forget(directory);
-        RuntimeState::new(config, store, PersistentState::default())
+        RuntimeState::new(
+            config,
+            "/nonexistent/streamdeckd-test.toml",
+            store,
+            PersistentState::default(),
+        )
     }
 
     fn now() -> DateTime<Utc> {

@@ -226,39 +226,43 @@ mod tests {
 
     #[tokio::test]
     async fn the_security_cli_recovers_the_credential_when_the_framework_is_blocked() {
-        // Point HOME at an empty directory so the file fallback finds nothing and
-        // the framework path fails fast.
-        let directory = tempfile::tempdir().expect("temp dir");
-        std::env::set_var("HOME", directory.path());
+        let credential = resolve_claude_credential(
+            no_keychain_entry,
+            &runner(Reply::ok(CLAUDE_PAYLOAD)),
+            "/usr/bin/security",
+            0,
+        )
+        .await
+        .expect("recovered through the CLI");
 
-        let client = HttpClient::new().expect("client");
-        let runner = runner(Reply::ok(CLAUDE_PAYLOAD));
-        let credential = claude_credential(&runner, "/usr/bin/security", 0)
-            .await
-            .expect("recovered through the CLI");
         assert_eq!(credential.access_token.expose(), "tok");
-        drop(client);
     }
 
     #[tokio::test]
     async fn an_expired_token_is_reported_rather_than_retried_through_the_cli() {
-        let directory = tempfile::tempdir().expect("temp dir");
-        let path = directory.path().join(".claude");
-        std::fs::create_dir_all(&path).expect("dir");
-        std::fs::write(path.join(".credentials.json"), CLAUDE_PAYLOAD).expect("write");
-        std::env::set_var("HOME", directory.path());
+        fn expired(_now_ms: i64) -> Result<ClaudeCredential, CredentialError> {
+            Err(CredentialError::ClaudeExpired)
+        }
 
-        // The payload expires in 2100, so ask from even later.
-        let runner = runner(Reply::fails(1, "should not be called"));
-        let error = claude_credential(&runner, "/usr/bin/security", 4_102_444_801_000)
+        let fake = Arc::new(FakeCommandRunner::new());
+        fake.fallback(Reply::fails(1, "should not be called"));
+        let runner = Arc::clone(&fake) as Arc<dyn CommandRunner>;
+
+        let error = resolve_claude_credential(expired, &runner, "/usr/bin/security", 0)
             .await
             .expect_err("expired");
+
         assert!(
             matches!(
                 error,
                 UsageError::Credential(CredentialError::ClaudeExpired)
             ),
             "{error}"
+        );
+        assert_eq!(
+            fake.call_count(),
+            0,
+            "an expired token is a real answer; the CLI cannot improve on it"
         );
     }
 
