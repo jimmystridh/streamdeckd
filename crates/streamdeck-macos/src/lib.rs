@@ -8,10 +8,12 @@ pub mod audio;
 pub mod command;
 pub mod credentials;
 pub mod fake;
+pub mod media;
 pub mod meet;
 pub mod notify;
 pub mod session;
 pub mod spotify;
+pub mod wispr;
 
 pub use command::{CommandError, CommandRunner, Output, SystemCommandRunner};
 

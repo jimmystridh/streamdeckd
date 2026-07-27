@@ -65,6 +65,10 @@ pub struct Config {
     #[serde(default)]
     pub usage: UsageConfig,
     #[serde(default)]
+    pub wispr: WisprConfig,
+    #[serde(default)]
+    pub spotify: SpotifyConfig,
+    #[serde(default)]
     pub audio: AudioConfig,
     #[serde(default)]
     pub tools: ToolsConfig,
@@ -86,6 +90,8 @@ impl Default for Config {
             meetings: MeetingsConfig::default(),
             github: GitHubConfig::default(),
             usage: UsageConfig::default(),
+            wispr: WisprConfig::default(),
+            spotify: SpotifyConfig::default(),
             audio: AudioConfig::default(),
             tools: ToolsConfig::default(),
         }
@@ -229,6 +235,55 @@ impl Default for UsageConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WisprConfig {
+    pub microphones: Vec<WisprMicrophoneConfig>,
+}
+
+impl Default for WisprConfig {
+    fn default() -> Self {
+        Self {
+            microphones: vec![
+                WisprMicrophoneConfig {
+                    label: "MacBook".to_string(),
+                    name: "Built-in mic".to_string(),
+                },
+                WisprMicrophoneConfig {
+                    label: "Bose".to_string(),
+                    name: "Bose NC 700 Headphones".to_string(),
+                },
+                WisprMicrophoneConfig {
+                    label: "RØDE".to_string(),
+                    name: "RODE NT-USB".to_string(),
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WisprMicrophoneConfig {
+    pub label: String,
+    /// Prefix of the device name exposed by Wispr Flow.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotifyConfig {
+    #[serde(default)]
+    pub playlists: Vec<SpotifyPlaylistConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpotifyPlaylistConfig {
+    pub label: String,
+    pub uri: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AudioConfig {
@@ -260,8 +315,8 @@ pub struct ToolsConfig {
     pub osascript: String,
     pub afplay: String,
     pub open: String,
-    /// Fallback for reading the Claude Code Keychain entry. Defaulted so a
-    /// configuration written before this field existed still parses.
+    /// Retained for compatibility with existing configuration files. Claude
+    /// credential reads no longer launch this potentially interactive tool.
     #[serde(default = "default_security")]
     pub security: String,
 }
@@ -405,6 +460,51 @@ impl Config {
                     .to_string(),
             ));
         }
+        if self.wispr.microphones.is_empty() || self.wispr.microphones.len() > 3 {
+            return Err(invalid(
+                "wispr.microphones must contain between 1 and 3 entries".to_string(),
+            ));
+        }
+        let mut wispr_names = std::collections::HashSet::new();
+        for microphone in &self.wispr.microphones {
+            if microphone.label.trim().is_empty() || microphone.label.chars().count() > 20 {
+                return Err(invalid(
+                    "wispr microphone labels must contain between 1 and 20 characters".to_string(),
+                ));
+            }
+            if microphone.name.trim().is_empty()
+                || microphone.name.chars().count() > 100
+                || microphone.name.chars().any(char::is_control)
+            {
+                return Err(invalid(
+                    "wispr microphone names must contain between 1 and 100 printable characters"
+                        .to_string(),
+                ));
+            }
+            if !wispr_names.insert(microphone.name.trim().to_lowercase()) {
+                return Err(invalid(
+                    "wispr microphone names must not contain duplicates".to_string(),
+                ));
+            }
+        }
+        if self.spotify.playlists.len() > 5 {
+            return Err(invalid(
+                "spotify.playlists supports at most 5 entries".to_string(),
+            ));
+        }
+        for playlist in &self.spotify.playlists {
+            if playlist.label.trim().is_empty() || playlist.label.chars().count() > 24 {
+                return Err(invalid(
+                    "spotify playlist labels must contain between 1 and 24 characters".to_string(),
+                ));
+            }
+            if !is_spotify_playlist_uri(&playlist.uri) {
+                return Err(invalid(format!(
+                    "spotify playlist `{}` has an invalid URI",
+                    playlist.label
+                )));
+            }
+        }
         for (kind, targets) in [("output", &self.audio.output), ("input", &self.audio.input)] {
             for target in targets {
                 if target.label.trim().is_empty() {
@@ -472,6 +572,15 @@ fn is_safe_sound_name(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric())
 }
 
+pub fn is_spotify_playlist_uri(value: &str) -> bool {
+    value.strip_prefix("spotify:playlist:").is_some_and(|id| {
+        id.len() == 22
+            && id
+                .chars()
+                .all(|character| character.is_ascii_alphanumeric())
+    })
+}
+
 fn default_version() -> u32 {
     CURRENT_VERSION
 }
@@ -500,14 +609,55 @@ mod tests {
         let config = Config::parse(TEMPLATE).expect("template parses");
         assert_eq!(config.version, CURRENT_VERSION);
         assert_eq!(config.startup_page, PageId::Home);
-        assert_eq!(config.audio.output.len(), 3);
+        assert_eq!(config.audio.output.len(), 4);
         assert_eq!(config.audio.input.len(), 3);
+        assert!(config.audio.native);
+        assert_eq!(config.wispr.microphones.len(), 3);
+        assert_eq!(config.wispr.microphones[2].name, "RODE NT-USB");
+        assert_eq!(config.spotify.playlists.len(), 5);
         assert_eq!(config.location.timezone(), chrono_tz::Europe::Stockholm);
     }
 
     #[test]
     fn defaults_are_valid() {
         Config::default().validate().expect("defaults are valid");
+    }
+
+    #[test]
+    fn wispr_microphones_are_bounded_and_require_unique_printable_names() {
+        let mut config = Config::default();
+        config.wispr.microphones.clear();
+        assert!(config.validate().is_err());
+
+        config.wispr = WisprConfig::default();
+        config.wispr.microphones[1].name = "built-IN MIC".to_string();
+        assert!(config.validate().is_err());
+
+        config.wispr = WisprConfig::default();
+        config.wispr.microphones[0].name = "bad\nname".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn spotify_playlists_are_bounded_and_require_safe_uris() {
+        let mut config = Config::default();
+        config.spotify.playlists.push(SpotifyPlaylistConfig {
+            label: "Recent".to_string(),
+            uri: "spotify:playlist:1jnizfcJFNGVeJgmp7ngK9".to_string(),
+        });
+        config.validate().expect("valid playlist");
+
+        config.spotify.playlists[0].uri =
+            "spotify:playlist:bad\" & do shell script \"oops".to_string();
+        assert!(config.validate().is_err());
+
+        config.spotify.playlists = (0..6)
+            .map(|index| SpotifyPlaylistConfig {
+                label: format!("Recent {index}"),
+                uri: "spotify:playlist:1jnizfcJFNGVeJgmp7ngK9".to_string(),
+            })
+            .collect();
+        assert!(config.validate().is_err());
     }
 
     #[test]

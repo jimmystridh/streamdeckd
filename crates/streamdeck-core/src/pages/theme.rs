@@ -28,6 +28,8 @@ pub const GITHUB: Color = Color::hex(0x4c1d95);
 pub const GITHUB_ACTIVE: Color = Color::hex(0x7c3aed);
 pub const GITHUB_ITEM: Color = Color::hex(0x5b21b6);
 pub const SPOTIFY: Color = Color::hex(0x1db954);
+pub const MEDIA: Color = Color::hex(0x4338ca);
+pub const WISPR: Color = Color::hex(0x6d28d9);
 pub const CLAUDE: Color = Color::hex(0xb45309);
 pub const CODEX: Color = Color::hex(0x0f172a);
 

@@ -19,8 +19,16 @@ async-trait = "0.1"
 tokio = { workspace = true, features = ["process", "time", "macros", "rt", "io-util", "sync"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
 core-foundation = "0.10"
+dispatch2 = "0.3"
+libc = "0.2"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-local-authentication = { version = "0.3", default-features = false, features = ["std", "LAContext"] }
 security-framework = "3"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
+tempfile = "3"

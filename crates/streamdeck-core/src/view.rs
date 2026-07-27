@@ -140,6 +140,7 @@ impl TextRun {
 pub enum Icon {
     Play,
     Pause,
+    PlayPause,
     Next,
     Previous,
     Skip,

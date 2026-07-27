@@ -40,7 +40,7 @@ enum Command {
     Devices,
     /// Switch to a page.
     Page {
-        /// home, mixer, github, spotify, stensjon, or pomodoro.
+        /// home, mixer, github, spotify, stensjon, pomodoro, weather, or media.
         page: String,
     },
     /// Synthesise a short press at `row,column`.

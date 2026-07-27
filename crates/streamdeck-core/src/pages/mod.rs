@@ -26,6 +26,8 @@ pub enum Action {
     Pomodoro(PomodoroCommand),
     Audio(AudioCommand),
     Spotify(SpotifyCommand),
+    Media(MediaCommand),
+    Wispr(WisprCommand),
     OpenGitHubMetric(MetricKind),
     /// Open the URL behind authored-pull-request tile `index`.
     OpenGitHubItem(usize),
@@ -74,10 +76,24 @@ pub enum SpotifyCommand {
     PlayPause,
     Next,
     Previous,
+    Seek(i32),
     Volume(i32),
-    ToggleShuffle,
-    ToggleRepeat,
+    PlayPlaylist(usize),
     OpenApp,
+}
+
+/// Commands sent to whichever application owns the macOS media session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaCommand {
+    PlayPause,
+    Next,
+    Previous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WisprCommand {
+    ToggleHandsFree,
+    SelectMicrophone(usize),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,10 +116,20 @@ pub enum Tile {
     ClaudeSevenDay,
     CodexUsage,
     SpotifyGlance,
+    MediaGlance,
+    WisprGlance,
+    WisprPickerHeader,
+    WisprMicrophone(usize),
+    MediaControl(MediaCommand),
+    MediaSource,
     GitHubSummary,
     PomodoroGlance,
     Meeting(usize),
     WeatherCurrent,
+    /// The time-sensitive Home glance: current/today before 17:00, tomorrow after.
+    WeatherGlance,
+    /// A daily forecast with Today/Tomorrow labels for the weather page.
+    WeatherDay(usize),
     WeatherForecast(usize),
     LakeCurrent,
     LakeTrend,
@@ -122,6 +148,7 @@ pub enum Tile {
     GitHubItem(usize),
     GitHubRefresh,
     SpotifyControl(SpotifyCommand),
+    SpotifyPlaylist(usize),
     PomodoroTimer,
     PomodoroToggle,
     PomodoroSkip,
@@ -185,6 +212,9 @@ pub fn page(id: PageId) -> Page {
         PageId::Spotify => spotify(),
         PageId::Stensjon => stensjon(),
         PageId::Pomodoro => pomodoro(),
+        PageId::Weather => weather(),
+        PageId::Media => media(),
+        PageId::Wispr => wispr(),
     };
     Page { id, keys }
 }
@@ -207,7 +237,13 @@ pub fn full_page(id: PageId, grid: Grid) -> Vec<KeyBinding> {
 fn home() -> Vec<KeyBinding> {
     use Action::*;
     vec![
-        KeyBinding::new(1, 1, Tile::MixerSummary, Navigate(PageId::Mixer)),
+        KeyBinding::new(
+            1,
+            1,
+            Tile::WisprGlance,
+            Wispr(WisprCommand::ToggleHandsFree),
+        )
+        .with_long(Navigate(PageId::Wispr)),
         KeyBinding::new(
             1,
             2,
@@ -227,13 +263,6 @@ fn home() -> Vec<KeyBinding> {
             Tile::ClaudeSevenDay,
             Refresh(IntegrationId::ClaudeUsage),
         ),
-        KeyBinding::new(
-            2,
-            1,
-            Tile::SpotifyGlance,
-            Spotify(SpotifyCommand::PlayPause),
-        )
-        .with_long(Navigate(PageId::Spotify)),
         KeyBinding::new(2, 2, Tile::GitHubSummary, Navigate(PageId::GitHub)),
         KeyBinding::new(
             2,
@@ -244,20 +273,18 @@ fn home() -> Vec<KeyBinding> {
         .with_long(Navigate(PageId::Pomodoro)),
         KeyBinding::new(2, 4, Tile::Meeting(0), OpenMeeting(0)),
         KeyBinding::new(2, 5, Tile::Meeting(1), OpenMeeting(1)),
-        // 3,1 and 3,2 are intentionally blank.
+        KeyBinding::new(3, 1, Tile::MixerSummary, Navigate(PageId::Mixer)),
         KeyBinding::new(
             3,
-            3,
-            Tile::WeatherCurrent,
-            WeatherDetail(WeatherTile::Current),
-        ),
-        KeyBinding::new(
-            3,
-            4,
-            Tile::WeatherForecast(1),
-            WeatherDetail(WeatherTile::Forecast),
-        ),
-        KeyBinding::new(3, 5, Tile::LakeCurrent, OpenPanel(PageId::Stensjon)),
+            2,
+            Tile::SpotifyGlance,
+            Spotify(SpotifyCommand::PlayPause),
+        )
+        .with_long(Navigate(PageId::Spotify)),
+        KeyBinding::new(3, 3, Tile::MediaGlance, Media(MediaCommand::PlayPause))
+            .with_long(Navigate(PageId::Media)),
+        // 3,4 is intentionally blank.
+        KeyBinding::new(3, 5, Tile::WeatherGlance, Navigate(PageId::Weather)),
     ]
 }
 
@@ -305,106 +332,95 @@ fn mixer() -> Vec<KeyBinding> {
         KeyBinding::new(
             1,
             5,
+            Tile::AudioDevice {
+                kind: Output,
+                index: 3,
+            },
+            Audio(AudioCommand::Select {
+                kind: Output,
+                index: 3,
+            }),
+        ),
+        KeyBinding::new(
+            2,
+            1,
+            Tile::AudioVolume {
+                kind: Output,
+                delta: -10,
+            },
+            Audio(AudioCommand::Volume {
+                kind: Output,
+                delta: -10,
+            }),
+        ),
+        KeyBinding::new(
+            2,
+            2,
+            Tile::AudioVolume {
+                kind: Output,
+                delta: 10,
+            },
+            Audio(AudioCommand::Volume {
+                kind: Output,
+                delta: 10,
+            }),
+        ),
+        KeyBinding::new(
+            2,
+            3,
             Tile::AudioMute(Output),
             Audio(AudioCommand::ToggleMute(Output)),
         ),
+        // 2,4 is intentionally blank.
         KeyBinding::new(
             2,
-            1,
-            Tile::AudioVolume {
-                kind: Output,
-                delta: -10,
-            },
-            Audio(AudioCommand::Volume {
-                kind: Output,
-                delta: -10,
-            }),
-        ),
-        KeyBinding::new(
-            2,
-            2,
-            Tile::AudioVolume {
-                kind: Output,
-                delta: 10,
-            },
-            Audio(AudioCommand::Volume {
-                kind: Output,
-                delta: 10,
-            }),
-        ),
-        KeyBinding::new(
-            2,
-            3,
-            Tile::AudioDevice {
-                kind: Input,
-                index: 0,
-            },
-            Audio(AudioCommand::Select {
-                kind: Input,
-                index: 0,
-            }),
-        ),
-        KeyBinding::new(
-            2,
-            4,
-            Tile::AudioDevice {
-                kind: Input,
-                index: 1,
-            },
-            Audio(AudioCommand::Select {
-                kind: Input,
-                index: 1,
-            }),
-        ),
-        KeyBinding::new(
-            2,
-            5,
-            Tile::AudioDevice {
-                kind: Input,
-                index: 2,
-            },
-            Audio(AudioCommand::Select {
-                kind: Input,
-                index: 2,
-            }),
-        ),
-        KeyBinding::new(
-            3,
-            1,
-            Tile::AudioMute(Input),
-            Audio(AudioCommand::ToggleMute(Input)),
-        ),
-        KeyBinding::new(
-            3,
-            2,
-            Tile::AudioVolume {
-                kind: Input,
-                delta: -10,
-            },
-            Audio(AudioCommand::Volume {
-                kind: Input,
-                delta: -10,
-            }),
-        ),
-        KeyBinding::new(
-            3,
-            3,
-            Tile::AudioVolume {
-                kind: Input,
-                delta: 10,
-            },
-            Audio(AudioCommand::Volume {
-                kind: Input,
-                delta: 10,
-            }),
-        ),
-        // 3,4 is intentionally blank.
-        KeyBinding::new(
-            3,
             5,
             Tile::MixerSummary,
             Refresh(IntegrationId::AudioStatus),
         ),
+        KeyBinding::new(
+            3,
+            1,
+            Tile::AudioDevice {
+                kind: Input,
+                index: 0,
+            },
+            Audio(AudioCommand::Select {
+                kind: Input,
+                index: 0,
+            }),
+        ),
+        KeyBinding::new(
+            3,
+            2,
+            Tile::AudioDevice {
+                kind: Input,
+                index: 1,
+            },
+            Audio(AudioCommand::Select {
+                kind: Input,
+                index: 1,
+            }),
+        ),
+        KeyBinding::new(
+            3,
+            3,
+            Tile::AudioDevice {
+                kind: Input,
+                index: 2,
+            },
+            Audio(AudioCommand::Select {
+                kind: Input,
+                index: 2,
+            }),
+        ),
+        KeyBinding::new(
+            3,
+            4,
+            Tile::AudioMute(Input),
+            Audio(AudioCommand::ToggleMute(Input)),
+        ),
+        // 3,5 is intentionally blank.
     ]
 }
 
@@ -497,14 +513,44 @@ fn spotify() -> Vec<KeyBinding> {
         KeyBinding::new(
             2,
             3,
-            Tile::SpotifyControl(SpotifyCommand::ToggleShuffle),
-            Spotify(SpotifyCommand::ToggleShuffle),
+            Tile::SpotifyControl(SpotifyCommand::Seek(-15)),
+            Spotify(SpotifyCommand::Seek(-15)),
         ),
         KeyBinding::new(
             2,
             4,
-            Tile::SpotifyControl(SpotifyCommand::ToggleRepeat),
-            Spotify(SpotifyCommand::ToggleRepeat),
+            Tile::SpotifyControl(SpotifyCommand::Seek(15)),
+            Spotify(SpotifyCommand::Seek(15)),
+        ),
+        KeyBinding::new(
+            3,
+            1,
+            Tile::SpotifyPlaylist(0),
+            Spotify(SpotifyCommand::PlayPlaylist(0)),
+        ),
+        KeyBinding::new(
+            3,
+            2,
+            Tile::SpotifyPlaylist(1),
+            Spotify(SpotifyCommand::PlayPlaylist(1)),
+        ),
+        KeyBinding::new(
+            3,
+            3,
+            Tile::SpotifyPlaylist(2),
+            Spotify(SpotifyCommand::PlayPlaylist(2)),
+        ),
+        KeyBinding::new(
+            3,
+            4,
+            Tile::SpotifyPlaylist(3),
+            Spotify(SpotifyCommand::PlayPlaylist(3)),
+        ),
+        KeyBinding::new(
+            3,
+            5,
+            Tile::SpotifyPlaylist(4),
+            Spotify(SpotifyCommand::PlayPlaylist(4)),
         ),
     ]
 }
@@ -621,6 +667,115 @@ fn pomodoro() -> Vec<KeyBinding> {
     ]
 }
 
+fn weather() -> Vec<KeyBinding> {
+    use Action::*;
+    vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(1, 2, Tile::WeatherCurrent, Refresh(IntegrationId::Weather)),
+        KeyBinding::new(1, 3, Tile::WeatherDay(0), Refresh(IntegrationId::Weather)),
+        KeyBinding::new(1, 4, Tile::WeatherDay(1), Refresh(IntegrationId::Weather)),
+        KeyBinding::new(1, 5, Tile::WeatherDay(2), Refresh(IntegrationId::Weather)),
+        KeyBinding::new(2, 1, Tile::WeatherDay(3), Refresh(IntegrationId::Weather)),
+        KeyBinding::new(2, 2, Tile::WeatherDay(4), Refresh(IntegrationId::Weather)),
+        KeyBinding::new(2, 3, Tile::WeatherDay(5), Refresh(IntegrationId::Weather)),
+        KeyBinding::new(2, 4, Tile::WeatherDay(6), Refresh(IntegrationId::Weather)),
+        // 2,5 is intentionally blank so forecast and water remain distinct rows.
+        KeyBinding::new(3, 1, Tile::LakeCurrent, OpenPanel(PageId::Stensjon)),
+        KeyBinding::new(3, 2, Tile::LakeTrend, OpenPanel(PageId::Stensjon)),
+        KeyBinding::new(3, 3, Tile::LakeDay(0), OpenPanel(PageId::Stensjon)),
+        KeyBinding::new(3, 4, Tile::LakeDay(1), OpenPanel(PageId::Stensjon)),
+        KeyBinding::new(3, 5, Tile::LakeDay(2), OpenPanel(PageId::Stensjon)),
+    ]
+}
+
+fn media() -> Vec<KeyBinding> {
+    use Action::*;
+    use AudioKind::Output;
+    vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(
+            1,
+            2,
+            Tile::MediaControl(MediaCommand::Previous),
+            Media(MediaCommand::Previous),
+        ),
+        KeyBinding::new(
+            1,
+            3,
+            Tile::MediaControl(MediaCommand::PlayPause),
+            Media(MediaCommand::PlayPause),
+        ),
+        KeyBinding::new(
+            1,
+            4,
+            Tile::MediaControl(MediaCommand::Next),
+            Media(MediaCommand::Next),
+        ),
+        KeyBinding::new(
+            1,
+            5,
+            Tile::MediaSource,
+            Refresh(IntegrationId::MediaSession),
+        ),
+        KeyBinding::new(
+            2,
+            1,
+            Tile::AudioMute(Output),
+            Audio(AudioCommand::ToggleMute(Output)),
+        ),
+        KeyBinding::new(
+            2,
+            2,
+            Tile::AudioVolume {
+                kind: Output,
+                delta: -10,
+            },
+            Audio(AudioCommand::Volume {
+                kind: Output,
+                delta: -10,
+            }),
+        ),
+        KeyBinding::new(
+            2,
+            3,
+            Tile::AudioVolume {
+                kind: Output,
+                delta: 10,
+            },
+            Audio(AudioCommand::Volume {
+                kind: Output,
+                delta: 10,
+            }),
+        ),
+    ]
+}
+
+fn wispr() -> Vec<KeyBinding> {
+    use Action::*;
+    vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(1, 3, Tile::WisprPickerHeader, Acknowledge),
+        KeyBinding::new(
+            2,
+            2,
+            Tile::WisprMicrophone(0),
+            Wispr(WisprCommand::SelectMicrophone(0)),
+        ),
+        KeyBinding::new(
+            2,
+            3,
+            Tile::WisprMicrophone(1),
+            Wispr(WisprCommand::SelectMicrophone(1)),
+        ),
+        KeyBinding::new(
+            2,
+            4,
+            Tile::WisprMicrophone(2),
+            Wispr(WisprCommand::SelectMicrophone(2)),
+        ),
+    ]
+}
+
 /// Integrations a page needs while it is visible. Drives visibility-gated refresh
 /// so nothing polls for a key nobody can see.
 pub fn required_integrations(id: PageId) -> Vec<IntegrationId> {
@@ -635,11 +790,19 @@ pub fn required_integrations(id: PageId) -> Vec<IntegrationId> {
             IntegrationId::CodexUsage,
             IntegrationId::Spotify,
         ],
-        PageId::Mixer => vec![IntegrationId::AudioStatus, IntegrationId::AudioInventory],
+        // The audio snapshot already contains both status and device inventory.
+        PageId::Mixer => vec![IntegrationId::AudioStatus],
         PageId::GitHub => vec![IntegrationId::GitHub],
         PageId::Spotify => vec![IntegrationId::Spotify],
         PageId::Stensjon => vec![IntegrationId::LakeCurrent, IntegrationId::LakeHistory],
         PageId::Pomodoro => Vec::new(),
+        PageId::Weather => vec![
+            IntegrationId::Weather,
+            IntegrationId::LakeCurrent,
+            IntegrationId::LakeHistory,
+        ],
+        PageId::Media => vec![IntegrationId::MediaSession, IntegrationId::AudioStatus],
+        PageId::Wispr => Vec::new(),
     }
 }
 
@@ -686,28 +849,28 @@ mod tests {
                 .map(|key| key.tile)
         };
 
-        assert_eq!(tile(1, 1), Some(Tile::MixerSummary));
+        assert_eq!(tile(1, 1), Some(Tile::WisprGlance));
         assert_eq!(tile(1, 2), Some(Tile::CodexFiveHour));
         assert_eq!(tile(1, 3), Some(Tile::CodexUsage));
         assert_eq!(tile(1, 4), Some(Tile::ClaudeFiveHour));
         assert_eq!(tile(1, 5), Some(Tile::ClaudeSevenDay));
-        assert_eq!(tile(2, 1), Some(Tile::SpotifyGlance));
+        assert_eq!(tile(2, 1), None, "2,1 is intentionally blank");
         assert_eq!(tile(2, 2), Some(Tile::GitHubSummary));
         assert_eq!(tile(2, 3), Some(Tile::PomodoroGlance));
         assert_eq!(tile(2, 4), Some(Tile::Meeting(0)));
         assert_eq!(tile(2, 5), Some(Tile::Meeting(1)));
-        assert_eq!(tile(3, 1), None, "3,1 is intentionally blank");
-        assert_eq!(tile(3, 2), None, "3,2 is intentionally blank");
-        assert_eq!(tile(3, 3), Some(Tile::WeatherCurrent));
-        assert_eq!(tile(3, 4), Some(Tile::WeatherForecast(1)));
-        assert_eq!(tile(3, 5), Some(Tile::LakeCurrent));
+        assert_eq!(tile(3, 1), Some(Tile::MixerSummary));
+        assert_eq!(tile(3, 2), Some(Tile::SpotifyGlance));
+        assert_eq!(tile(3, 3), Some(Tile::MediaGlance));
+        assert_eq!(tile(3, 4), None, "3,4 is intentionally blank");
+        assert_eq!(tile(3, 5), Some(Tile::WeatherGlance));
     }
 
     #[test]
-    fn home_long_presses_open_the_spotify_and_pomodoro_pages() {
+    fn home_long_presses_open_spotify_pomodoro_and_media_pages() {
         let page = page(PageId::Home);
         let spotify = page
-            .binding(KeyPosition::new(2, 1))
+            .binding(KeyPosition::new(3, 2))
             .expect("spotify glance");
         assert_eq!(spotify.short, Action::Spotify(SpotifyCommand::PlayPause));
         assert_eq!(spotify.long, Some(Action::Navigate(PageId::Spotify)));
@@ -717,17 +880,51 @@ mod tests {
             .expect("pomodoro glance");
         assert_eq!(pomodoro.short, Action::Pomodoro(PomodoroCommand::Toggle));
         assert_eq!(pomodoro.long, Some(Action::Navigate(PageId::Pomodoro)));
+
+        let media = page.binding(KeyPosition::new(3, 3)).expect("media key");
+        assert_eq!(media.short, Action::Media(MediaCommand::PlayPause));
+        assert_eq!(media.long, Some(Action::Navigate(PageId::Media)));
     }
 
     #[test]
-    fn the_home_water_tile_opens_the_temporary_panel() {
+    fn home_slot_one_toggles_wispr_and_holds_for_the_microphone_picker() {
+        let key = page(PageId::Home)
+            .binding(KeyPosition::new(1, 1))
+            .copied()
+            .expect("Wispr tile");
+
+        assert_eq!(key.short, Action::Wispr(WisprCommand::ToggleHandsFree));
+        assert_eq!(key.long, Some(Action::Navigate(PageId::Wispr)));
+    }
+
+    #[test]
+    fn wispr_page_offers_three_microphone_choices() {
+        let page = page(PageId::Wispr);
+        assert_eq!(
+            page.binding(KeyPosition::new(1, 1)).expect("home").short,
+            Action::Navigate(PageId::Home)
+        );
+        for (column, index) in [(2, 0), (3, 1), (4, 2)] {
+            let key = page
+                .binding(KeyPosition::new(2, column))
+                .expect("microphone");
+            assert_eq!(key.tile, Tile::WisprMicrophone(index));
+            assert_eq!(
+                key.short,
+                Action::Wispr(WisprCommand::SelectMicrophone(index))
+            );
+        }
+    }
+
+    #[test]
+    fn the_home_weather_tile_opens_the_weather_page() {
         let page = page(PageId::Home);
-        let lake = page.binding(KeyPosition::new(3, 5)).expect("lake tile");
-        assert_eq!(lake.short, Action::OpenPanel(PageId::Stensjon));
+        let weather = page.binding(KeyPosition::new(3, 5)).expect("weather tile");
+        assert_eq!(weather.short, Action::Navigate(PageId::Weather));
     }
 
     #[test]
-    fn mixer_matches_the_documented_layout_including_its_blank() {
+    fn mixer_has_four_outputs_and_no_microphone_gain_controls() {
         let page = page(PageId::Mixer);
         let tile = |row, column| {
             page.binding(KeyPosition::new(row, column))
@@ -736,13 +933,13 @@ mod tests {
 
         assert_eq!(tile(1, 1), Some(Tile::HomeButton));
         assert_eq!(
-            tile(1, 4),
+            tile(1, 5),
             Some(Tile::AudioDevice {
                 kind: AudioKind::Output,
-                index: 2
+                index: 3
             })
         );
-        assert_eq!(tile(1, 5), Some(Tile::AudioMute(AudioKind::Output)));
+        assert_eq!(tile(2, 3), Some(Tile::AudioMute(AudioKind::Output)));
         assert_eq!(
             tile(2, 1),
             Some(Tile::AudioVolume {
@@ -750,9 +947,26 @@ mod tests {
                 delta: -10
             })
         );
-        assert_eq!(tile(3, 1), Some(Tile::AudioMute(AudioKind::Input)));
-        assert_eq!(tile(3, 4), None, "3,4 is intentionally blank");
-        assert_eq!(tile(3, 5), Some(Tile::MixerSummary));
+        assert_eq!(
+            tile(3, 1),
+            Some(Tile::AudioDevice {
+                kind: AudioKind::Input,
+                index: 0
+            })
+        );
+        assert_eq!(tile(3, 4), Some(Tile::AudioMute(AudioKind::Input)));
+        assert_eq!(tile(2, 4), None, "2,4 is intentionally blank");
+        assert_eq!(tile(3, 5), None, "3,5 is intentionally blank");
+        assert_eq!(tile(2, 5), Some(Tile::MixerSummary));
+        assert!(!page.keys.iter().any(|key| {
+            matches!(
+                key.tile,
+                Tile::AudioVolume {
+                    kind: AudioKind::Input,
+                    ..
+                }
+            )
+        }));
     }
 
     #[test]
@@ -809,13 +1023,21 @@ mod tests {
         );
         assert_eq!(
             action(2, 3),
-            Some(Action::Spotify(SpotifyCommand::ToggleShuffle))
+            Some(Action::Spotify(SpotifyCommand::Seek(-15)))
         );
         assert_eq!(
             action(2, 4),
-            Some(Action::Spotify(SpotifyCommand::ToggleRepeat))
+            Some(Action::Spotify(SpotifyCommand::Seek(15)))
         );
         assert_eq!(action(2, 5), None, "remaining keys are blank");
+        for index in 0..5 {
+            assert_eq!(
+                action(3, index + 1),
+                Some(Action::Spotify(SpotifyCommand::PlayPlaylist(
+                    index as usize
+                )))
+            );
+        }
     }
 
     #[test]
@@ -836,6 +1058,53 @@ mod tests {
         assert_eq!(tile(3, 1), Some(Tile::LakeDay(5)));
         assert_eq!(tile(3, 2), Some(Tile::LakeDay(6)));
         assert_eq!(tile(3, 3), None, "remaining keys are blank");
+    }
+
+    #[test]
+    fn weather_combines_the_week_ahead_with_water_readings() {
+        let page = page(PageId::Weather);
+        let tile = |row, column| {
+            page.binding(KeyPosition::new(row, column))
+                .map(|key| key.tile)
+        };
+
+        assert_eq!(tile(1, 1), Some(Tile::HomeButton));
+        assert_eq!(tile(1, 2), Some(Tile::WeatherCurrent));
+        assert_eq!(tile(1, 3), Some(Tile::WeatherDay(0)));
+        assert_eq!(tile(1, 4), Some(Tile::WeatherDay(1)));
+        assert_eq!(tile(2, 4), Some(Tile::WeatherDay(6)));
+        assert_eq!(tile(2, 5), None);
+        assert_eq!(tile(3, 1), Some(Tile::LakeCurrent));
+        assert_eq!(tile(3, 2), Some(Tile::LakeTrend));
+        assert_eq!(tile(3, 5), Some(Tile::LakeDay(2)));
+    }
+
+    #[test]
+    fn media_exposes_transport_owner_and_system_volume() {
+        let page = page(PageId::Media);
+        let action = |row, column| {
+            page.binding(KeyPosition::new(row, column))
+                .map(|key| key.short)
+        };
+
+        assert_eq!(action(1, 2), Some(Action::Media(MediaCommand::Previous)));
+        assert_eq!(action(1, 3), Some(Action::Media(MediaCommand::PlayPause)));
+        assert_eq!(action(1, 4), Some(Action::Media(MediaCommand::Next)));
+        assert_eq!(
+            action(1, 5),
+            Some(Action::Refresh(IntegrationId::MediaSession))
+        );
+        assert_eq!(
+            action(2, 1),
+            Some(Action::Audio(AudioCommand::ToggleMute(AudioKind::Output)))
+        );
+        assert_eq!(
+            action(2, 2),
+            Some(Action::Audio(AudioCommand::Volume {
+                kind: AudioKind::Output,
+                delta: -10,
+            }))
+        );
     }
 
     #[test]
@@ -915,8 +1184,10 @@ mod tests {
         assert_eq!(
             with_long,
             vec![
-                (PageId::Home, KeyPosition::new(2, 1)),
+                (PageId::Home, KeyPosition::new(1, 1)),
                 (PageId::Home, KeyPosition::new(2, 3)),
+                (PageId::Home, KeyPosition::new(3, 2)),
+                (PageId::Home, KeyPosition::new(3, 3)),
                 (PageId::Pomodoro, KeyPosition::new(3, 1)),
                 (PageId::Pomodoro, KeyPosition::new(3, 2)),
                 (PageId::Pomodoro, KeyPosition::new(3, 3)),
@@ -948,6 +1219,15 @@ mod tests {
             vec![IntegrationId::Spotify]
         );
         assert!(required_integrations(PageId::Home).contains(&IntegrationId::Weather));
+        assert_eq!(
+            required_integrations(PageId::Media),
+            vec![IntegrationId::MediaSession, IntegrationId::AudioStatus]
+        );
+        assert_eq!(
+            required_integrations(PageId::Mixer),
+            vec![IntegrationId::AudioStatus]
+        );
+        assert!(required_integrations(PageId::Weather).contains(&IntegrationId::LakeHistory));
         assert!(!required_integrations(PageId::GitHub).contains(&IntegrationId::Spotify));
     }
 }

@@ -69,6 +69,11 @@ pub fn layers(icon: Icon) -> Vec<Layer> {
             Layer::fill(rect(0.26, 0.16, 0.16, 0.68)),
             Layer::fill(rect(0.58, 0.16, 0.16, 0.68)),
         ],
+        Icon::PlayPause => vec![
+            Layer::fill(polygon(&[(0.12, 0.18), (0.52, 0.5), (0.12, 0.82)])),
+            Layer::fill(rect(0.62, 0.18, 0.1, 0.64)),
+            Layer::fill(rect(0.79, 0.18, 0.1, 0.64)),
+        ],
         Icon::Next => vec![
             Layer::fill(polygon(&[(0.18, 0.18), (0.62, 0.5), (0.18, 0.82)])),
             Layer::fill(rect(0.68, 0.18, 0.14, 0.64)),
@@ -419,9 +424,10 @@ fn arc_bottom() -> Path {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 35] = [
+    const ALL: [Icon; 36] = [
         Icon::Play,
         Icon::Pause,
+        Icon::PlayPause,
         Icon::Next,
         Icon::Previous,
         Icon::Skip,

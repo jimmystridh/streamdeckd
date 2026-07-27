@@ -12,13 +12,17 @@ use streamdeck_core::integrations::claude::ClaudeUsage;
 use streamdeck_core::integrations::codex::CodexUsage;
 use streamdeck_core::integrations::github::{GitHubSnapshot, MetricKind};
 use streamdeck_core::integrations::lake::{LakeHistory, LakeReading};
+use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::SpotifyStatus;
 use streamdeck_core::integrations::weather::WeatherSnapshot;
-use streamdeck_core::model::{AudioKind, IntegrationId};
-use streamdeck_core::pages::{Action, AudioCommand, PomodoroCommand, SpotifyCommand};
+use streamdeck_core::model::{AudioKind, IntegrationId, PageId};
+use streamdeck_core::pages::{
+    Action, AudioCommand, MediaCommand, PomodoroCommand, SpotifyCommand, WisprCommand,
+};
 use streamdeck_core::pomodoro;
 use streamdeck_core::state::Durability;
+use streamdeck_macos::media::Control as MediaControl;
 use streamdeck_macos::spotify::Control;
 use tokio::sync::mpsc;
 
@@ -50,6 +54,9 @@ pub enum Task {
     AdjustVolume { kind: AudioKind, delta: i32 },
     ToggleMute(AudioKind),
     Spotify(SpotifyCommand),
+    Media(MediaCommand),
+    SetWisprHandsFree(bool),
+    SelectWisprMicrophone(usize),
     OpenMeeting(usize),
     OpenUrl(String),
 }
@@ -61,6 +68,7 @@ pub struct ActionOutcome {
     pub invalidate: Vec<IntegrationId>,
     /// Set when a microphone mute captured the level to restore later.
     pub remembered_input_volume: Option<u8>,
+    pub wispr_hands_free: Option<bool>,
 }
 
 /// The result of a spawned refresh.
@@ -75,6 +83,7 @@ pub enum RefreshResult {
     Claude(Result<ClaudeUsage, String>),
     Codex(Result<CodexUsage, String>),
     Spotify(Result<SpotifyStatus, String>),
+    Media(Result<MediaStatus, String>),
 }
 
 /// Applies an action to the runtime's own state and reports what else must happen.
@@ -105,6 +114,19 @@ pub fn apply(state: &mut RuntimeState, action: Action, now: DateTime<Utc>, now_m
             });
         }
         Action::Spotify(command) => effects.spawn.push(Task::Spotify(command)),
+        Action::Media(command) => effects.spawn.push(Task::Media(command)),
+        Action::Wispr(command) => match command {
+            WisprCommand::ToggleHandsFree => {
+                state.wispr_hands_free = !state.wispr_hands_free;
+                effects
+                    .spawn
+                    .push(Task::SetWisprHandsFree(state.wispr_hands_free));
+            }
+            WisprCommand::SelectMicrophone(index) => {
+                effects.page_changed = state.navigator.go_to(PageId::Home);
+                effects.spawn.push(Task::SelectWisprMicrophone(index));
+            }
+        },
         Action::OpenMeeting(index) => effects.spawn.push(Task::OpenMeeting(index)),
         Action::OpenGitHubMetric(kind) => {
             if let Some(snapshot) = state.feeds.github.peek() {
@@ -191,6 +213,8 @@ pub fn spawn(
 ) {
     let audio = Arc::clone(&services.audio);
     let spotify = Arc::clone(&services.spotify);
+    let media = Arc::clone(&services.media);
+    let wispr = Arc::clone(&services.wispr);
     let meet = Arc::clone(&services.meet);
     let runner = Arc::clone(&services.runner);
     let open = state.config.tools.open.clone();
@@ -204,6 +228,8 @@ pub fn spawn(
         .peek()
         .map(|status| status.volume)
         .unwrap_or(50);
+    let spotify_playlists = state.config.spotify.playlists.clone();
+    let wispr_microphones = state.config.wispr.microphones.clone();
 
     tokio::spawn(async move {
         let mut outcome = ActionOutcome::default();
@@ -225,10 +251,15 @@ pub fn spawn(
                 outcome.invalidate.push(IntegrationId::AudioStatus);
             }
             Task::AdjustVolume { kind, delta } => {
-                if let Err(error) =
-                    streamdeck_macos::audio::adjust_volume(&*audio, kind, delta).await
-                {
-                    outcome.error = Some(error.to_string());
+                match streamdeck_macos::audio::adjust_volume(&*audio, kind, delta).await {
+                    Ok(volume) => tracing::info!(
+                        component = "audio",
+                        kind = ?kind,
+                        delta,
+                        volume,
+                        "adjusted audio volume"
+                    ),
+                    Err(error) => outcome.error = Some(error.to_string()),
                 }
                 outcome.invalidate.push(IntegrationId::AudioStatus);
             }
@@ -245,8 +276,20 @@ pub fn spawn(
                     SpotifyCommand::PlayPause => spotify.control(Control::PlayPause).await,
                     SpotifyCommand::Next => spotify.control(Control::Next).await,
                     SpotifyCommand::Previous => spotify.control(Control::Previous).await,
-                    SpotifyCommand::ToggleShuffle => spotify.control(Control::ToggleShuffle).await,
-                    SpotifyCommand::ToggleRepeat => spotify.control(Control::ToggleRepeat).await,
+                    SpotifyCommand::Seek(delta) => spotify.control(Control::Seek(delta)).await,
+                    SpotifyCommand::PlayPlaylist(index) => match spotify_playlists.get(index) {
+                        Some(playlist) => {
+                            spotify
+                                .control(Control::PlayPlaylist(playlist.uri.clone()))
+                                .await
+                        }
+                        None => {
+                            outcome.error = Some(format!(
+                                "no Spotify playlist configured at position {index}"
+                            ));
+                            Ok(())
+                        }
+                    },
                     SpotifyCommand::Volume(delta) => {
                         let next = streamdeck_core::integrations::spotify::next_volume(
                             spotify_volume,
@@ -260,6 +303,41 @@ pub fn spawn(
                 }
                 outcome.invalidate.push(IntegrationId::Spotify);
             }
+            Task::Media(command) => {
+                let control = match command {
+                    MediaCommand::PlayPause => MediaControl::PlayPause,
+                    MediaCommand::Next => MediaControl::Next,
+                    MediaCommand::Previous => MediaControl::Previous,
+                };
+                if let Err(error) = media.control(control).await {
+                    outcome.error = Some(error.to_string());
+                }
+                outcome.invalidate.push(IntegrationId::MediaSession);
+            }
+            Task::SetWisprHandsFree(enabled) => {
+                if let Err(error) = wispr.set_hands_free(enabled).await {
+                    outcome.error = Some(error.to_string());
+                    outcome.wispr_hands_free = Some(!enabled);
+                }
+            }
+            Task::SelectWisprMicrophone(index) => match wispr_microphones.get(index) {
+                Some(microphone) => {
+                    if let Err(error) = wispr.select_microphone(&microphone.name).await {
+                        outcome.error = Some(error.to_string());
+                    } else {
+                        tracing::info!(
+                            component = "wispr",
+                            microphone = %microphone.label,
+                            "selected Wispr Flow microphone"
+                        );
+                    }
+                }
+                None => {
+                    outcome.error = Some(format!(
+                        "no Wispr microphone configured at position {index}"
+                    ));
+                }
+            },
             Task::OpenMeeting(index) => match meetings.get(index) {
                 Some(meeting) => {
                     // Only the URL is used; the title never reaches a log here.
@@ -298,6 +376,7 @@ pub fn spawn_refresh(
     let runner = Arc::clone(&services.runner);
     let audio = Arc::clone(&services.audio);
     let spotify = Arc::clone(&services.spotify);
+    let media = Arc::clone(&services.media);
     let config = Arc::clone(&state.config);
     let timezone = state.timezone;
     let last_modified = state.feeds.weather_last_modified.clone();
@@ -352,14 +431,9 @@ pub fn spawn_refresh(
                     .map_err(|error| error.to_string()),
             ),
             IntegrationId::ClaudeUsage => RefreshResult::Claude(
-                services::usage::fetch_claude(
-                    &http,
-                    &runner,
-                    &config.tools.security,
-                    now.timestamp_millis(),
-                )
-                .await
-                .map_err(|error| error.to_string()),
+                services::usage::fetch_claude(&http, now.timestamp_millis())
+                    .await
+                    .map_err(|error| error.to_string()),
             ),
             IntegrationId::CodexUsage => RefreshResult::Codex(
                 services::usage::fetch_codex(&http, config.usage.codex_auth_path.as_deref())
@@ -368,6 +442,9 @@ pub fn spawn_refresh(
             ),
             IntegrationId::Spotify => {
                 RefreshResult::Spotify(spotify.status().await.map_err(|error| error.to_string()))
+            }
+            IntegrationId::MediaSession => {
+                RefreshResult::Media(media.status().await.map_err(|error| error.to_string()))
             }
         };
         let _ = events.send(RuntimeEvent::Refreshed(id, result));
@@ -440,6 +517,7 @@ pub fn store_refresh(
         RefreshResult::Claude(result) => store!(state.feeds.claude, result),
         RefreshResult::Codex(result) => store!(state.feeds.codex, result),
         RefreshResult::Spotify(result) => store!(state.feeds.spotify, result),
+        RefreshResult::Media(result) => store!(state.feeds.media, result),
     }
 }
 
@@ -617,15 +695,62 @@ mod tests {
             SpotifyCommand::PlayPause,
             SpotifyCommand::Next,
             SpotifyCommand::Previous,
+            SpotifyCommand::Seek(-15),
             SpotifyCommand::Volume(5),
-            SpotifyCommand::ToggleShuffle,
-            SpotifyCommand::ToggleRepeat,
+            SpotifyCommand::PlayPlaylist(0),
             SpotifyCommand::OpenApp,
         ] {
             let mut state = state();
             let effects = apply(&mut state, Action::Spotify(command), now(), 1_000);
             assert_eq!(effects.spawn, vec![Task::Spotify(command)], "{command:?}");
         }
+    }
+
+    #[test]
+    fn every_system_media_control_becomes_exactly_one_task() {
+        for command in [
+            MediaCommand::PlayPause,
+            MediaCommand::Next,
+            MediaCommand::Previous,
+        ] {
+            let mut state = state();
+            let effects = apply(&mut state, Action::Media(command), now(), 1_000);
+            assert_eq!(effects.spawn, vec![Task::Media(command)], "{command:?}");
+        }
+    }
+
+    #[test]
+    fn wispr_tap_toggles_hands_free_and_microphone_selection_returns_home() {
+        let mut state = state();
+
+        let start = apply(
+            &mut state,
+            Action::Wispr(WisprCommand::ToggleHandsFree),
+            now(),
+            1_000,
+        );
+        assert!(state.wispr_hands_free);
+        assert_eq!(start.spawn, vec![Task::SetWisprHandsFree(true)]);
+
+        let stop = apply(
+            &mut state,
+            Action::Wispr(WisprCommand::ToggleHandsFree),
+            now(),
+            2_000,
+        );
+        assert!(!state.wispr_hands_free);
+        assert_eq!(stop.spawn, vec![Task::SetWisprHandsFree(false)]);
+
+        state.navigator.go_to(PageId::Wispr);
+        let select = apply(
+            &mut state,
+            Action::Wispr(WisprCommand::SelectMicrophone(2)),
+            now(),
+            3_000,
+        );
+        assert_eq!(state.navigator.visible_page(), PageId::Home);
+        assert!(select.page_changed);
+        assert_eq!(select.spawn, vec![Task::SelectWisprMicrophone(2)]);
     }
 
     #[test]

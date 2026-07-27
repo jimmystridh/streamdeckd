@@ -3,11 +3,13 @@
 //! Every function here is pure over a [`WorldView`], so the golden image suite and
 //! the CLI preview render exactly what the hardware does.
 
+use crate::config::{SpotifyPlaylistConfig, WisprMicrophoneConfig};
 use crate::integrations::audio::{AudioTarget, Resolution};
 use crate::integrations::claude::UsageSeverity;
 use crate::integrations::github::MetricKind;
 use crate::integrations::lake::LakeReading;
-use crate::integrations::spotify::{PlayerState, RepeatMode, SpotifyStatus};
+use crate::integrations::media::MediaStatus;
+use crate::integrations::spotify::{PlayerState, SpotifyStatus};
 use crate::integrations::weather::{SymbolFamily, WeatherDay, WeatherSnapshot, WeatherSymbol};
 use crate::model::{AudioKind, WeatherTile};
 use crate::pomodoro::{Phase, Status};
@@ -20,13 +22,16 @@ use crate::text::{
 use crate::view::{Color, Icon, KeyStatus, KeyView, TextRun, Weight};
 
 use super::theme;
-use super::{SpotifyCommand, StatsScope, Tile};
+use super::{MediaCommand, SpotifyCommand, StatsScope, Tile};
+use chrono::Timelike;
 
 /// Configuration-derived inputs the tiles need but the world view does not carry.
 pub struct RenderContext<'a> {
     pub world: &'a WorldView,
     pub audio_output: &'a [AudioTarget],
     pub audio_input: &'a [AudioTarget],
+    pub spotify_playlists: &'a [SpotifyPlaylistConfig],
+    pub wispr_microphones: &'a [WisprMicrophoneConfig],
 }
 
 impl<'a> RenderContext<'a> {
@@ -35,12 +40,24 @@ impl<'a> RenderContext<'a> {
             world,
             audio_output: &[],
             audio_input: &[],
+            spotify_playlists: &[],
+            wispr_microphones: &[],
         }
     }
 
     pub fn with_audio(mut self, output: &'a [AudioTarget], input: &'a [AudioTarget]) -> Self {
         self.audio_output = output;
         self.audio_input = input;
+        self
+    }
+
+    pub fn with_spotify_playlists(mut self, playlists: &'a [SpotifyPlaylistConfig]) -> Self {
+        self.spotify_playlists = playlists;
+        self
+    }
+
+    pub fn with_wispr_microphones(mut self, microphones: &'a [WisprMicrophoneConfig]) -> Self {
+        self.wispr_microphones = microphones;
         self
     }
 
@@ -66,10 +83,18 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
         Tile::ClaudeSevenDay => claude_window(world, true),
         Tile::CodexUsage => codex_usage(world),
         Tile::SpotifyGlance => spotify_glance(world),
+        Tile::MediaGlance => media_glance(),
+        Tile::WisprGlance => wispr_glance(world),
+        Tile::WisprPickerHeader => wispr_picker_header(),
+        Tile::WisprMicrophone(index) => wispr_microphone(context, index),
+        Tile::MediaControl(command) => media_control(command),
+        Tile::MediaSource => media_source(world),
         Tile::GitHubSummary => github_summary(world),
         Tile::PomodoroGlance => pomodoro_timer(world, "TAP START · HOLD"),
         Tile::Meeting(index) => meeting(world, index),
         Tile::WeatherCurrent => weather_current(world),
+        Tile::WeatherGlance => weather_glance(world),
+        Tile::WeatherDay(offset) => weather_day(world, offset),
         Tile::WeatherForecast(offset) => weather_forecast(world, offset),
         Tile::LakeCurrent => lake_current(world),
         Tile::LakeTrend => lake_trend(world),
@@ -85,6 +110,9 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
             .header("GITHUB")
             .footer("FORCE REFRESH"),
         Tile::SpotifyControl(command) => spotify_control(world, command),
+        Tile::SpotifyPlaylist(index) => {
+            spotify_playlist(world, context.spotify_playlists.get(index))
+        }
         Tile::PomodoroTimer => pomodoro_timer(world, "TAP TOGGLE"),
         Tile::PomodoroToggle => pomodoro_toggle(world),
         Tile::PomodoroSkip => KeyView::solid(theme::SURFACE_RAISED)
@@ -120,7 +148,7 @@ fn mixer_summary(world: &WorldView) -> KeyView {
     let input_state = if status.input_volume == 0 {
         "OFF".to_string()
     } else {
-        format!("{}%", status.input_volume)
+        "ON".to_string()
     };
 
     KeyView::solid(theme::MIXER)
@@ -263,9 +291,9 @@ fn spotify_glance(world: &WorldView) -> KeyView {
     let mut view = KeyView::solid(background)
         .header(status.glance_label(13))
         .glyph(if status.is_playing() {
-            Icon::Play
-        } else {
             Icon::Pause
+        } else {
+            Icon::Play
         })
         .footer("HOLD: CONTROLS")
         .status(if status.is_available() {
@@ -280,6 +308,86 @@ fn spotify_glance(world: &WorldView) -> KeyView {
         if status.artwork_url.is_some() {
             view = view.artwork(track_id.clone());
         }
+    }
+    view
+}
+
+fn media_glance() -> KeyView {
+    KeyView::solid(theme::MEDIA)
+        .header("MEDIA")
+        .glyph(Icon::PlayPause)
+        .footer("HOLD: CONTROLS")
+}
+
+fn wispr_glance(world: &WorldView) -> KeyView {
+    if world.wispr_hands_free {
+        return KeyView::solid(theme::LIVE)
+            .header("WISPR FLOW")
+            .glyph(Icon::Microphone)
+            .footer("TAP TO STOP")
+            .status(KeyStatus::Selected);
+    }
+    KeyView::solid(theme::WISPR)
+        .header("WISPR FLOW")
+        .glyph(Icon::Microphone)
+        .footer("TAP START · HOLD MICS")
+}
+
+fn wispr_picker_header() -> KeyView {
+    KeyView::solid(theme::WISPR)
+        .header("WISPR FLOW")
+        .glyph(Icon::Microphone)
+        .footer("CHOOSE MICROPHONE")
+}
+
+fn wispr_microphone(context: &RenderContext<'_>, index: usize) -> KeyView {
+    let Some(microphone) = context.wispr_microphones.get(index) else {
+        return KeyView::blank();
+    };
+    KeyView::solid(theme::SURFACE_RAISED)
+        .header(upper_short(&microphone.label, 20))
+        .glyph(Icon::Microphone)
+        .footer("SELECT")
+}
+
+fn media_control(command: MediaCommand) -> KeyView {
+    match command {
+        MediaCommand::Previous => KeyView::solid(theme::SURFACE_RAISED)
+            .header("PREVIOUS")
+            .glyph(Icon::Previous)
+            .footer("SYSTEM MEDIA"),
+        MediaCommand::PlayPause => KeyView::solid(theme::MEDIA)
+            .header("PLAY / PAUSE")
+            .glyph(Icon::PlayPause)
+            .footer("SYSTEM MEDIA"),
+        MediaCommand::Next => KeyView::solid(theme::SURFACE_RAISED)
+            .header("NEXT")
+            .glyph(Icon::Next)
+            .footer("SYSTEM MEDIA"),
+    }
+}
+
+fn media_source(world: &WorldView) -> KeyView {
+    let Some(status): Option<&MediaStatus> = world.media.value() else {
+        return offline_or_loading(&world.media, "MEDIA OWNER", "SESSION OFFLINE");
+    };
+    if !status.is_active() {
+        return KeyView::solid(theme::SURFACE_SUNKEN)
+            .header("MEDIA OWNER")
+            .glyph(Icon::Note)
+            .footer("NO ACTIVE PLAYER")
+            .status(KeyStatus::Disabled);
+    }
+
+    let source = status.display_source().unwrap_or("MEDIA");
+    let mut view = KeyView::solid(theme::MEDIA)
+        .header("MEDIA OWNER")
+        .value(upper_short(source, 13), 22.0)
+        .status(world.media.status());
+    if let Some(title) = &status.title {
+        view = view.footer(ellipsize(title, 20));
+    } else if let Some(application) = &status.application {
+        view = view.footer(ellipsize(application, 20));
     }
     view
 }
@@ -379,6 +487,50 @@ fn weather_current(world: &WorldView) -> KeyView {
         );
     }
     view
+}
+
+fn weather_glance(world: &WorldView) -> KeyView {
+    if world.now.with_timezone(&world.timezone).hour() >= 17 {
+        weather_day(world, 1)
+    } else {
+        weather_current(world).header("TODAY")
+    }
+}
+
+fn weather_day(world: &WorldView, offset: usize) -> KeyView {
+    let Some(snapshot) = world.weather.value() else {
+        return offline_or_loading(&world.weather, "FORECAST", "WEATHER OFFLINE");
+    };
+    let Some(day) = snapshot.day(offset) else {
+        return KeyView::error("FORECAST", "NO DAY");
+    };
+    let (top, bottom) = theme::sky(day.symbol);
+    let header = match offset {
+        0 => "TODAY".to_string(),
+        1 => "TOMORROW".to_string(),
+        _ => weekday_label(day, world),
+    };
+
+    KeyView {
+        background: crate::view::Background::Diagonal { top, bottom },
+        ..Default::default()
+    }
+    .header(header)
+    .header_right("MET.NO")
+    .art(weather_icon(day.symbol))
+    .value(
+        format!(
+            "{}/{}",
+            format_temperature(day.high),
+            format_temperature(day.low)
+        ),
+        23.0,
+    )
+    .footers(
+        format_precipitation(day.precipitation),
+        date_label(day, world),
+    )
+    .status(world.weather.status())
 }
 
 /// The expanded reading a press reveals: humidity, wind, rain, and today's range.
@@ -791,6 +943,15 @@ fn spotify_control(world: &WorldView, command: SpotifyCommand) -> KeyView {
             .glyph(Icon::Next)
             .status(key_status),
         SpotifyCommand::PlayPause => spotify_play_pause(world, status, key_status),
+        SpotifyCommand::Seek(delta) => KeyView::solid(base)
+            .header(if delta < 0 { "BACK" } else { "FORWARD" })
+            .glyph(if delta < 0 {
+                Icon::Previous
+            } else {
+                Icon::Next
+            })
+            .value(format!("{}s", delta.unsigned_abs()), 24.0)
+            .status(key_status),
         SpotifyCommand::OpenApp => KeyView::solid(theme::SPOTIFY)
             .header("SPOTIFY")
             .glyph(Icon::Note)
@@ -807,54 +968,36 @@ fn spotify_control(world: &WorldView, command: SpotifyCommand) -> KeyView {
             )
             .footer(format!("{}{}", if delta > 0 { "+" } else { "" }, delta))
             .status(key_status),
-        SpotifyCommand::ToggleShuffle => {
-            let on = status.is_some_and(|status| status.shuffling);
-            KeyView::solid(if on && available {
-                theme::SPOTIFY
-            } else {
-                base
-            })
-            .header("SHUFFLE")
-            .glyph(Icon::Shuffle)
-            .footer(if on { "ON" } else { "OFF" })
-            .status(if !available {
-                KeyStatus::Disabled
-            } else if on {
-                KeyStatus::Selected
-            } else {
-                KeyStatus::Ok
-            })
-        }
-        SpotifyCommand::ToggleRepeat => {
-            let mode = status
-                .map(|status| status.repeat)
-                .unwrap_or(RepeatMode::Off);
-            let on = mode != RepeatMode::Off;
-            KeyView::solid(if on && available {
-                theme::SPOTIFY
-            } else {
-                base
-            })
-            .header("REPEAT")
-            .glyph(if mode == RepeatMode::One {
-                Icon::RepeatOne
-            } else {
-                Icon::Repeat
-            })
-            .footer(match mode {
-                RepeatMode::Off => "OFF",
-                RepeatMode::All => "ALL",
-                RepeatMode::One => "ONE",
-            })
-            .status(if !available {
-                KeyStatus::Disabled
-            } else if on {
-                KeyStatus::Selected
-            } else {
-                KeyStatus::Ok
-            })
-        }
+        SpotifyCommand::PlayPlaylist(_) => KeyView::blank(),
     }
+}
+
+fn spotify_playlist(world: &WorldView, playlist: Option<&SpotifyPlaylistConfig>) -> KeyView {
+    let available = world
+        .spotify
+        .value()
+        .is_some_and(SpotifyStatus::is_available);
+    let Some(playlist) = playlist else {
+        return KeyView::solid(theme::DISABLED)
+            .header("PLAYLIST")
+            .glyph(Icon::Note)
+            .footer("NOT SET")
+            .status(KeyStatus::Disabled);
+    };
+
+    KeyView::solid(if available {
+        theme::SPOTIFY
+    } else {
+        theme::DISABLED
+    })
+    .header(upper_short(&playlist.label, 13))
+    .glyph(Icon::Note)
+    .footer("PLAY PLAYLIST")
+    .status(if available {
+        KeyStatus::Ok
+    } else {
+        KeyStatus::Disabled
+    })
 }
 
 fn spotify_play_pause(
@@ -883,9 +1026,9 @@ fn spotify_play_pause(
     })
     .header(ellipsize(&status.track, 13))
     .glyph(if status.is_playing() {
-        Icon::Play
-    } else {
         Icon::Pause
+    } else {
+        Icon::Play
     })
     .footer(ellipsize(&status.artist, 20))
     .status(key_status);
@@ -1175,13 +1318,22 @@ mod tests {
     }
 
     #[test]
-    fn the_mixer_summary_reports_devices_and_levels() {
+    fn the_mixer_summary_reports_devices_without_microphone_gain() {
         let mut world = world();
         world.audio = Feed::Ready(audio_snapshot("Bose NC 700 Headphones", false, 75));
 
         let view = view(Tile::MixerSummary, &world);
         assert_eq!(view.rows[0], ("BOSE".to_string(), "42%".to_string()));
-        assert_eq!(view.rows[1], ("MIC MAC".to_string(), "75%".to_string()));
+        assert_eq!(view.rows[1], ("MIC MAC".to_string(), "ON".to_string()));
+    }
+
+    #[test]
+    fn the_mixer_summary_recognizes_airpods() {
+        let mut world = world();
+        world.audio = Feed::Ready(audio_snapshot("Jimmy’s AirPods - Find My", false, 75));
+
+        let view = view(Tile::MixerSummary, &world);
+        assert_eq!(view.rows[0].0, "AIRPODS");
     }
 
     #[test]
@@ -1201,7 +1353,8 @@ mod tests {
         let output = targets(&[
             ("MacBook", Some("MacBook Pro Speakers"), None),
             ("Bose", Some("Bose NC 700 Headphones"), None),
-            ("USB Home", None, Some("usb")),
+            ("USB Home", Some("USB audio CODEC"), None),
+            ("AirPods", Some("Jimmy’s AirPods - Find My"), None),
         ]);
         let context = RenderContext::new(&world).with_audio(&output, &[]);
 
@@ -1509,6 +1662,72 @@ mod tests {
     }
 
     #[test]
+    fn home_weather_changes_from_current_conditions_to_tomorrow_at_seventeen() {
+        let mut world = world();
+        world.weather = Feed::Ready(
+            parse_forecast(
+                include_str!("../../../../tests/fixtures/met-locationforecast.json"),
+                "Stensjön",
+                Stockholm,
+            )
+            .expect("parsed"),
+        );
+
+        let before = view(Tile::WeatherGlance, &world);
+        assert_eq!(before.header.expect("day").text, "TODAY");
+        assert_eq!(before.value.expect("temperature").text, "19°");
+
+        world.now = DateTime::parse_from_rfc3339("2026-07-24T15:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        let after = view(Tile::WeatherGlance, &world);
+        assert_eq!(after.header.expect("day").text, "TOMORROW");
+        assert_eq!(after.value.expect("range").text, "21°/11°");
+    }
+
+    #[test]
+    fn weather_page_days_name_today_and_tomorrow_explicitly() {
+        let mut world = world();
+        world.weather = Feed::Ready(
+            parse_forecast(
+                include_str!("../../../../tests/fixtures/met-locationforecast.json"),
+                "Stensjön",
+                Stockholm,
+            )
+            .expect("parsed"),
+        );
+
+        assert_eq!(
+            view(Tile::WeatherDay(0), &world)
+                .header
+                .expect("today")
+                .text,
+            "TODAY"
+        );
+        assert_eq!(
+            view(Tile::WeatherDay(1), &world)
+                .header
+                .expect("tomorrow")
+                .text,
+            "TOMORROW"
+        );
+    }
+
+    #[test]
+    fn media_owner_prefers_the_resolved_service_over_its_browser() {
+        let mut world = world();
+        world.media = Feed::Ready(MediaStatus {
+            application: Some("Google Chrome".to_string()),
+            source: Some("YouTube".to_string()),
+            title: Some("Deep Work Music".to_string()),
+        });
+
+        let view = view(Tile::MediaSource, &world);
+        assert_eq!(view.value.expect("owner").text, "YOUTUBE");
+        assert_eq!(view.footer_center.expect("title").text, "Deep Work Music");
+    }
+
+    #[test]
     fn a_pressed_weather_tile_shows_the_full_reading() {
         let mut world = world();
         world.weather = Feed::Ready(
@@ -1705,8 +1924,8 @@ mod tests {
             SpotifyCommand::Next,
             SpotifyCommand::PlayPause,
             SpotifyCommand::Volume(5),
-            SpotifyCommand::ToggleShuffle,
-            SpotifyCommand::ToggleRepeat,
+            SpotifyCommand::Seek(-15),
+            SpotifyCommand::Seek(15),
         ] {
             let view = view(Tile::SpotifyControl(command), &world);
             assert_eq!(view.status, KeyStatus::Disabled, "{command:?}");
@@ -1728,20 +1947,46 @@ mod tests {
         );
 
         let play = view(Tile::SpotifyControl(SpotifyCommand::PlayPause), &world);
-        assert_eq!(play.glyph, Some(Icon::Play));
+        assert_eq!(play.glyph, Some(Icon::Pause));
         assert_eq!(play.artwork.as_deref(), Some("spotify:track:1"));
         assert_eq!(play.background.representative(), theme::SPOTIFY);
 
-        let shuffle = view(Tile::SpotifyControl(SpotifyCommand::ToggleShuffle), &world);
-        assert_eq!(shuffle.status, KeyStatus::Selected);
-        assert_eq!(shuffle.footer_center.expect("footer").text, "ON");
-
-        let repeat = view(Tile::SpotifyControl(SpotifyCommand::ToggleRepeat), &world);
-        assert_eq!(repeat.glyph, Some(Icon::RepeatOne));
-        assert_eq!(repeat.footer_center.expect("footer").text, "ONE");
+        let seek = view(Tile::SpotifyControl(SpotifyCommand::Seek(-15)), &world);
+        assert_eq!(seek.header.expect("header").text, "BACK");
+        assert_eq!(seek.value.expect("value").text, "15s");
 
         let volume = view(Tile::SpotifyControl(SpotifyCommand::Volume(-5)), &world);
         assert_eq!(volume.value.expect("value").text, "72%");
+    }
+
+    #[test]
+    fn a_paused_track_offers_play_and_configured_playlists_are_named() {
+        let mut world = world();
+        world.spotify = Feed::Ready(
+            crate::integrations::spotify::parse_status(
+                "paused\tTruth\tKamasi\tThe Epic\t\tspotify:track:1\t50\tfalse\toff",
+            )
+            .expect("parsed"),
+        );
+        assert_eq!(
+            view(Tile::SpotifyControl(SpotifyCommand::PlayPause), &world).glyph,
+            Some(Icon::Play)
+        );
+        assert_eq!(view(Tile::SpotifyGlance, &world).glyph, Some(Icon::Play));
+
+        let playlists = [SpotifyPlaylistConfig {
+            label: "Deep Focus".to_string(),
+            uri: "spotify:playlist:1jnizfcJFNGVeJgmp7ngK9".to_string(),
+        }];
+        let playlist = render(
+            Tile::SpotifyPlaylist(0),
+            &RenderContext::new(&world).with_spotify_playlists(&playlists),
+        );
+        assert_eq!(playlist.header.expect("header").text, "DEEP FOCUS");
+        assert_eq!(
+            playlist.footer_center.expect("footer").text,
+            "PLAY PLAYLIST"
+        );
     }
 
     #[test]
@@ -1756,6 +2001,50 @@ mod tests {
         assert_eq!(
             view(Tile::SpotifyControl(SpotifyCommand::PlayPause), &world).artwork,
             None
+        );
+    }
+
+    #[test]
+    fn wispr_tile_distinguishes_idle_and_hands_free() {
+        let mut world = world();
+
+        let idle = view(Tile::WisprGlance, &world);
+        assert_eq!(idle.background.representative(), theme::WISPR);
+        assert_eq!(idle.glyph, Some(Icon::Microphone));
+        assert_eq!(
+            idle.footer_center.expect("footer").text,
+            "TAP START · HOLD MICS"
+        );
+
+        world.wispr_hands_free = true;
+        let hands_free = view(Tile::WisprGlance, &world);
+        assert_eq!(hands_free.status, KeyStatus::Selected);
+        assert_eq!(
+            hands_free.footer_center.expect("footer").text,
+            "TAP TO STOP"
+        );
+    }
+
+    #[test]
+    fn wispr_microphone_tile_uses_the_configured_label() {
+        let world = world();
+        let microphones = vec![crate::config::WisprMicrophoneConfig {
+            label: "RØDE".to_string(),
+            name: "RODE NT-USB".to_string(),
+        }];
+        let selected = render(
+            Tile::WisprMicrophone(0),
+            &RenderContext::new(&world).with_wispr_microphones(&microphones),
+        );
+        assert_eq!(selected.header.expect("header").text, "RØDE");
+        assert_eq!(selected.footer_center.expect("footer").text, "SELECT");
+
+        assert_eq!(
+            render(
+                Tile::WisprMicrophone(1),
+                &RenderContext::new(&world).with_wispr_microphones(&microphones),
+            ),
+            KeyView::blank()
         );
     }
 
@@ -1926,14 +2215,18 @@ mod tests {
         let output = targets(&[
             ("MacBook", Some("MacBook Pro Speakers"), None),
             ("Bose", Some("Bose NC 700 Headphones"), None),
-            ("USB Home", None, Some("usb")),
+            ("USB Home", Some("USB audio CODEC"), None),
+            ("AirPods", Some("Jimmy’s AirPods - Find My"), None),
         ]);
         let input = targets(&[
             ("MacBook Mic", Some("MacBook Pro Microphone"), None),
             ("Bose Mic", Some("Bose NC 700 Headphones"), None),
             ("RØDE Mic", None, Some("røde|rode")),
         ]);
-        let context = RenderContext::new(&world).with_audio(&output, &input);
+        let wispr = crate::config::WisprConfig::default();
+        let context = RenderContext::new(&world)
+            .with_audio(&output, &input)
+            .with_wispr_microphones(&wispr.microphones);
         for id in crate::model::PageId::ALL {
             for key in super::super::full_page(id, crate::model::Grid::MK2) {
                 let view = render(key.tile, &context);

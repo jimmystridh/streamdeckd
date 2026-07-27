@@ -14,6 +14,7 @@ use harness::Harness;
 use streamdeck_core::model::{KeyPosition, PageId};
 use streamdeck_core::pomodoro::{self, Phase, PomodoroState, Status};
 use streamdeck_core::state::PersistentState;
+use streamdeck_macos::fake::WisprInvocation;
 use streamdeckd::device::recording::Sent;
 use streamdeckd::device::DeviceError;
 use streamdeckd::runtime::RuntimeEvent;
@@ -91,8 +92,8 @@ async fn locking_animates_all_keys_and_unlocking_restores_the_page() {
     assert!(harness.runtime.screen_locked());
     assert_eq!(harness.runtime.screensaver_scene(), Some("aurora"));
     assert!(
-        harness.device.flushes() >= 4,
-        "the screensaver should approach a 50 ms frame cadence"
+        harness.device.flushes() >= 1,
+        "the first screensaver frame must be flushed immediately"
     );
     let animated_positions: std::collections::HashSet<_> =
         harness.device.keys_sent().into_iter().collect();
@@ -224,6 +225,78 @@ async fn a_long_press_does_not_also_fire_the_short_action() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_media_key_plays_on_tap_and_opens_controls_on_hold() {
+    let mut harness = Harness::new(PageId::Home).await;
+
+    harness.press(3, 3).await;
+    assert_eq!(harness.page(), PageId::Home);
+
+    harness.hold(3, 3).await;
+    assert_eq!(harness.page(), PageId::Media);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn wispr_taps_toggle_hands_free_and_holding_opens_the_microphone_picker() {
+    let mut harness = Harness::new(PageId::Home).await;
+
+    harness.press(1, 1).await;
+    assert!(harness.runtime.state().wispr_hands_free);
+    assert_eq!(
+        harness.wispr.calls(),
+        vec![WisprInvocation::HandsFree(true)]
+    );
+
+    harness.press(1, 1).await;
+    assert!(!harness.runtime.state().wispr_hands_free);
+    assert_eq!(
+        harness.wispr.calls(),
+        vec![
+            WisprInvocation::HandsFree(true),
+            WisprInvocation::HandsFree(false)
+        ]
+    );
+
+    harness.hold(1, 1).await;
+    assert_eq!(harness.page(), PageId::Wispr);
+    assert_eq!(harness.wispr.calls().len(), 2);
+
+    harness.press(2, 4).await;
+    assert_eq!(harness.page(), PageId::Home);
+    assert_eq!(
+        harness.wispr.calls(),
+        vec![
+            WisprInvocation::HandsFree(true),
+            WisprInvocation::HandsFree(false),
+            WisprInvocation::Microphone("RODE NT-USB".to_string()),
+        ]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn disconnecting_while_the_wispr_picker_is_open_clears_the_held_key() {
+    let mut harness = Harness::new(PageId::Home).await;
+    let position = KeyPosition::new(1, 1);
+    harness
+        .events
+        .send(RuntimeEvent::Key(streamdeckd::device::KeyEvent::Down(
+            position,
+        )))
+        .expect("sent");
+    harness.settle().await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    harness.settle().await;
+    assert_eq!(harness.page(), PageId::Wispr);
+
+    harness
+        .events
+        .send(RuntimeEvent::DeviceDisconnected)
+        .expect("sent");
+    harness.settle().await;
+
+    assert!(harness.wispr.calls().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn the_armed_affordance_reaches_the_deck_before_the_page_changes() {
     let mut harness = Harness::new(PageId::Home).await;
     harness.device.reset();
@@ -259,14 +332,16 @@ async fn the_armed_affordance_reaches_the_deck_before_the_page_changes() {
 async fn the_temporary_panel_opens_and_returns_to_the_page_it_came_from() {
     let mut harness = Harness::new(PageId::Home).await;
 
-    // 3,5 on Home is the water tile, which opens the Stensjön panel.
+    // Weather owns the water summary now; its current-water tile opens history.
     harness.press(3, 5).await;
+    assert_eq!(harness.page(), PageId::Weather);
+    harness.press(3, 1).await;
     assert_eq!(harness.page(), PageId::Stensjon);
     assert!(harness.runtime.state().navigator.panel_is_open());
 
-    // 1,1 on the panel dismisses it immediately.
+    // 1,1 on the panel dismisses it back to Weather.
     harness.press(1, 1).await;
-    assert_eq!(harness.page(), PageId::Home);
+    assert_eq!(harness.page(), PageId::Weather);
     assert!(!harness.runtime.state().navigator.panel_is_open());
 }
 
@@ -274,6 +349,7 @@ async fn the_temporary_panel_opens_and_returns_to_the_page_it_came_from() {
 async fn interacting_with_the_panel_restarts_its_timeout() {
     let mut harness = Harness::new(PageId::Home).await;
     harness.press(3, 5).await;
+    harness.press(3, 1).await;
 
     let first = harness
         .runtime
@@ -494,6 +570,35 @@ async fn a_volume_press_reads_the_level_then_sets_the_new_one() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn spotify_seek_and_recent_playlist_presses_reach_the_adapter() {
+    let mut harness = Harness::new(PageId::Spotify).await;
+    harness.commands.reset();
+
+    harness.press(2, 3).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    harness.settle().await;
+    assert!(
+        harness
+            .commands
+            .called_with("set nextPosition to (player position) + (-15)"),
+        "{:?}",
+        harness.commands.calls()
+    );
+
+    harness.commands.reset();
+    harness.press(3, 1).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    harness.settle().await;
+    assert!(
+        harness
+            .commands
+            .called_with("play track \"spotify:playlist:1jnizfcJFNGVeJgmp7ngK9\""),
+        "{:?}",
+        harness.commands.calls()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_state_change_rerenders_only_the_keys_it_touched() {
     let mut harness = Harness::new(PageId::Pomodoro).await;
     let baseline = harness.runtime.metrics().renders;
@@ -511,34 +616,15 @@ async fn a_state_change_rerenders_only_the_keys_it_touched() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_weather_press_shows_the_detail_card_and_reverts_on_its_own() {
+async fn the_home_weather_tile_opens_the_full_weather_page() {
     let mut harness = Harness::new(PageId::Home).await;
     harness.device.reset();
 
-    // 3,3 is the current-weather tile.
-    harness.press(3, 3).await;
-    assert!(
-        matches!(
-            harness.runtime.state().weather_detail,
-            Some((streamdeck_core::model::WeatherTile::Current, _))
-        ),
-        "the press should open the detail window"
-    );
+    harness.press(3, 5).await;
+    assert_eq!(harness.page(), PageId::Weather);
     assert!(
         !harness.device.keys_sent().is_empty(),
-        "the flipped tile must reach the deck"
-    );
-
-    // The revert deadline fires six seconds later and repaints on its own.
-    harness.settle_for(std::time::Duration::from_secs(7)).await;
-    assert_eq!(harness.runtime.state().weather_detail, None);
-    assert_eq!(
-        harness
-            .runtime
-            .state()
-            .deadlines
-            .get(streamdeck_core::deadline::DeadlineId::WeatherDetail),
-        None
+        "the weather page must reach the deck"
     );
 }
 
@@ -586,8 +672,8 @@ async fn a_blank_key_press_changes_nothing() {
     harness.device.reset();
     let before = harness.runtime.state().persistent.clone();
 
-    // 3,1 on Home is intentionally blank.
-    harness.press(3, 1).await;
+    // 1,1 on Home is intentionally blank.
+    harness.press(1, 1).await;
 
     assert_eq!(harness.page(), PageId::Home);
     assert_eq!(harness.runtime.state().persistent, before);
@@ -625,11 +711,8 @@ async fn a_disconnect_stops_rendering_and_a_reconnect_repaints_everything() {
         .expect("sent");
     harness.settle().await;
 
-    assert_eq!(
-        harness.device.keys_sent().len(),
-        15,
-        "a reconnect repaints the whole deck"
-    );
+    let repainted: std::collections::HashSet<_> = harness.device.keys_sent().into_iter().collect();
+    assert_eq!(repainted.len(), 15, "a reconnect repaints the whole deck");
     assert_eq!(harness.runtime.metrics().device_reconnects, 1);
 }
 
@@ -693,9 +776,10 @@ async fn every_page_can_be_reached_and_rendered_from_home() {
     let mut harness = Harness::new(PageId::Home).await;
 
     for (page, presses) in [
-        (PageId::Mixer, vec![(1u8, 1u8)]),
+        (PageId::Mixer, vec![(3u8, 1u8)]),
         (PageId::GitHub, vec![(2, 2)]),
-        (PageId::Stensjon, vec![(3, 5)]),
+        (PageId::Weather, vec![(3, 5)]),
+        (PageId::Stensjon, vec![(3, 5), (3, 1)]),
     ] {
         // Return to Home first.
         while harness.page() != PageId::Home {

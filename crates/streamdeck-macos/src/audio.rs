@@ -29,6 +29,16 @@ pub enum AudioError {
     Ambiguous { label: String, count: usize },
     #[error("no audio target is configured at position {index}")]
     NoSuchTarget { index: usize },
+    #[error("CoreAudio failed while trying to {operation} (OSStatus {status})")]
+    CoreAudio {
+        operation: &'static str,
+        status: i32,
+    },
+    #[error("CoreAudio cannot control {property} on `{device}`")]
+    Unsupported {
+        device: String,
+        property: &'static str,
+    },
 }
 
 /// What every audio-capable adapter must provide.
@@ -39,6 +49,37 @@ pub trait AudioAdapter: Send + Sync {
     async fn select(&self, kind: AudioKind, device: &str) -> Result<(), AudioError>;
     async fn set_volume(&self, kind: AudioKind, volume: u8) -> Result<(), AudioError>;
     async fn set_output_muted(&self, muted: bool) -> Result<(), AudioError>;
+
+    async fn adjust_volume_relative(&self, kind: AudioKind, delta: i32) -> Result<u8, AudioError> {
+        let status = self.status().await?;
+        let next = audio::next_volume(status.volume(kind), delta);
+        self.set_volume(kind, next).await?;
+        Ok(next)
+    }
+
+    async fn toggle_mute_state(
+        &self,
+        kind: AudioKind,
+        restore_volume: u8,
+    ) -> Result<(bool, Option<u8>), AudioError> {
+        let status = self.status().await?;
+        match kind {
+            AudioKind::Output => {
+                let muted = !status.output_muted;
+                self.set_output_muted(muted).await?;
+                Ok((muted, None))
+            }
+            AudioKind::Input if status.input_volume == 0 => {
+                self.set_volume(AudioKind::Input, restore_volume.clamp(1, 100))
+                    .await?;
+                Ok((false, None))
+            }
+            AudioKind::Input => {
+                self.set_volume(AudioKind::Input, 0).await?;
+                Ok((true, Some(status.input_volume)))
+            }
+        }
+    }
 
     async fn snapshot(&self) -> Result<AudioSnapshot, AudioError> {
         // Status and inventory are independent, so fetch them together.
@@ -165,10 +206,7 @@ pub async fn adjust_volume(
     kind: AudioKind,
     delta: i32,
 ) -> Result<u8, AudioError> {
-    let status = adapter.status().await?;
-    let next = audio::next_volume(status.volume(kind), delta);
-    adapter.set_volume(kind, next).await?;
-    Ok(next)
+    adapter.adjust_volume_relative(kind, delta).await
 }
 
 /// Toggles mute. A microphone has no mute switch, so zero gain stands in and the
@@ -178,26 +216,13 @@ pub async fn toggle_mute(
     kind: AudioKind,
     restore_volume: u8,
 ) -> Result<(bool, Option<u8>), AudioError> {
-    let status = adapter.status().await?;
-    match kind {
-        AudioKind::Output => {
-            let muted = !status.output_muted;
-            adapter.set_output_muted(muted).await?;
-            Ok((muted, None))
-        }
-        AudioKind::Input => {
-            if status.input_volume == 0 {
-                let restore = restore_volume.clamp(1, 100);
-                adapter.set_volume(AudioKind::Input, restore).await?;
-                Ok((false, None))
-            } else {
-                let remembered = status.input_volume;
-                adapter.set_volume(AudioKind::Input, 0).await?;
-                Ok((true, Some(remembered)))
-            }
-        }
-    }
+    adapter.toggle_mute_state(kind, restore_volume).await
 }
+
+#[cfg(target_os = "macos")]
+mod native;
+#[cfg(target_os = "macos")]
+pub use native::CoreAudioAdapter;
 
 #[cfg(test)]
 mod tests {

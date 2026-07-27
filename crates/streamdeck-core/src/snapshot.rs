@@ -13,6 +13,7 @@ use crate::integrations::{
     codex::CodexUsage,
     github::GitHubSnapshot,
     lake::{LakeHistory, LakeReading},
+    media::MediaStatus,
     meetings::Meeting,
     spotify::SpotifyStatus,
     weather::WeatherSnapshot,
@@ -87,6 +88,7 @@ pub struct WorldView {
     pub pomodoro: PomodoroSnapshot,
     /// Set while a completion is unacknowledged and the alert is being shown.
     pub pomodoro_alert_flashing: bool,
+    pub wispr_hands_free: bool,
 
     pub audio: Feed<AudioSnapshot>,
     pub meetings: Feed<Vec<Meeting>>,
@@ -97,6 +99,7 @@ pub struct WorldView {
     pub claude: Feed<ClaudeUsage>,
     pub codex: Feed<CodexUsage>,
     pub spotify: Feed<SpotifyStatus>,
+    pub media: Feed<MediaStatus>,
 
     /// The weather tile currently showing its expanded reading, if any.
     pub weather_detail: Option<crate::model::WeatherTile>,
@@ -122,6 +125,7 @@ impl WorldView {
                 timezone,
             ),
             pomodoro_alert_flashing: false,
+            wispr_hands_free: false,
             audio: Feed::Loading,
             meetings: Feed::Loading,
             weather: Feed::Loading,
@@ -131,6 +135,7 @@ impl WorldView {
             claude: Feed::Loading,
             codex: Feed::Loading,
             spotify: Feed::Loading,
+            media: Feed::Loading,
             weather_detail: None,
             panel_seconds_remaining: None,
             panel_total_seconds: 10,

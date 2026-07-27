@@ -19,27 +19,42 @@ alternatives expensive.
 
 ## Layout
 
-Six pages, coordinates as `row,column`, one-based.
+Nine pages, coordinates as `row,column`, one-based.
 
-**Home** — mixer summary, Codex 5-hour and overall usage, Claude 5-hour and
-7-day usage, Spotify glance
-(hold for the Spotify page), GitHub summary, Pomodoro glance (hold for the
-Pomodoro page), the next two meetings, current and tomorrow's Stensjön weather,
-and the lake water temperature (opens a temporary panel).
+**Home** — Wispr Flow on key 1 (tap to start/stop hands-free dictation; hold for
+the microphone picker), Codex 5-hour and overall usage, Claude 5-hour and 7-day
+usage, GitHub summary, Pomodoro glance (hold for the Pomodoro page), the next two
+meetings, mixer on key 11, Spotify on key 12 (hold for Spotify), system
+play/pause on key 13 (hold for Media), and weather on key 15. Weather shows today
+before 17:00 and tomorrow after 17:00.
 
-**Mixer** — three output devices, output mute, output volume ±10, three input
-devices, microphone mute, input gain ±10, and a mixer summary.
+**Mixer** — MacBook, Bose, USB audio and AirPods outputs, output mute and volume
+±10, three input devices, microphone mute, and a mixer summary. Microphone gain
+is deliberately not exposed. Device switching, volume, and mute use CoreAudio
+directly, without spawning `SwitchAudioSource` or AppleScript for each press.
 
 **GitHub** — review requests, authored pull requests, assigned issues, the
 notification inbox, the five most recently updated authored pull requests, and a
 force refresh.
 
-**Spotify** — previous, play/pause with artwork, next, open Spotify, volume ±5,
-shuffle, repeat.
+**Spotify** — previous, action-oriented play/pause with artwork, next, open
+Spotify, volume ±5, seek ±15 seconds, and five configurable playlist shortcuts.
+
+**Weather** — current conditions, Today, Tomorrow, another five forecast days,
+current Stensjön water temperature, seven-day water trend, and recent readings.
+The water row opens the complete Stensjön history panel.
+
+**Media** — the macOS system media session's previous, play/pause and next
+controls, the MediaRemote owner with a CoreAudio active-output fallback (for
+example YouTube in Chrome when the tab can be resolved), and system output mute
+and volume.
+
+**Wispr Flow** — a centered picker for the configured MacBook, Bose, and RØDE
+microphones. Selecting one switches Wispr's input and returns Home.
 
 **Stensjön** — current water temperature, seven-day trend, an auto-close
 countdown, and seven days of history. Shown as a temporary panel that returns to
-Home after ten seconds; any interaction restarts the timeout.
+the page it came from after ten seconds; any interaction restarts the timeout.
 
 **Pomodoro** — timer, start/pause, skip, reset, start focus/short break/long
 break, cycle and break statistics, three duration controls, and today's and
@@ -72,6 +87,11 @@ Installed files:
 
 The daemon will not start while another application owns the device. Quit Elgato
 Stream Deck or OpenDeck first; `streamdeckd` never kills them for you.
+
+Wispr control uses the app's own `start-hands-free`, `stop-hands-free`, and
+`switch-mic` deep links, so it does not require Accessibility access. Microphone
+names in `[wispr.microphones]` are matched as case-insensitive prefixes by Wispr
+Flow.
 
 When the Mac locks, streamdeckd keeps ownership of the device and replaces the
 current page with a native 15-key screensaver at 20 FPS. Each new lock session
@@ -148,7 +168,7 @@ cargo run --release -p streamdeckd -- --foreground
 ```text
 crates/streamdeck-core     domain model: config, state, pomodoro, pages, parsers
 crates/streamdeck-render   tiny-skia renderer, embedded fonts, project-owned icons
-crates/streamdeck-macos    audio, Spotify, notifications, Meet, credentials
+crates/streamdeck-macos    audio, system media, Spotify, Wispr, notifications, Meet, credentials
 crates/streamdeckd         device I/O, services, coordinator, control socket
 crates/streamdeckctl       the CLI
 crates/streamdeck-alert    the AppKit completion alert
@@ -182,22 +202,15 @@ Bearer tokens are held in a `Secret` wrapper whose `Debug` and `Display` print
 validated against `meet.google.com` before being handed to the system, and
 artwork is only fetched from Spotify's own image hosts.
 
-### The Claude Keychain prompt
+### Claude credentials
 
-The first time a given `streamdeckd` binary reads the Claude Code Keychain entry,
-macOS asks you to authorize it, because an unsigned binary is not on that item's
-access-control list. Choose **Always Allow** once and the Claude tiles work from
-then on. Until you do, they show a timeout — the read runs on a blocking thread
-under a five-second limit, so a pending prompt never stalls the daemon.
+Background usage refreshes never request interactive Keychain access. The daemon
+reuses a credential in memory for 30 minutes, checks
+`~/.claude/.credentials.json`, then queries the Claude Code Keychain entry with
+authentication UI explicitly disabled. If an existing entry cannot be read
+silently, it is left alone for six hours rather than repeatedly asking macOS.
 
-Codesigning the release binaries avoids re-prompting after every rebuild:
-
-```sh
-codesign --force --sign - --identifier io.github.jimmystridh.streamdeckd \
-  target/release/streamdeckd
-```
-
-An ad-hoc signature (`--sign -`) is enough for a stable identity on one machine.
+Run `claude` when the tile reports that its credential is missing or expired.
 
 ## Rolling back to Elgato
 

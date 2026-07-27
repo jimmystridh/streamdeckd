@@ -14,13 +14,15 @@ use streamdeck_core::integrations::claude::{ClaudeUsage, UsageWindow};
 use streamdeck_core::integrations::codex::{CodexUsage, CodexWindow};
 use streamdeck_core::integrations::github::GitHubSnapshot;
 use streamdeck_core::integrations::lake::{parse_current, parse_history};
+use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::parse_status;
 use streamdeck_core::integrations::weather::parse_forecast;
 use streamdeck_core::model::PageId;
 use streamdeck_core::state::{PersistentState, StateStore};
 use streamdeck_macos::audio::CommandAudioAdapter;
-use streamdeck_macos::fake::{FakeCommandRunner, Reply};
+use streamdeck_macos::fake::{FakeCommandRunner, FakeWisprAdapter, Reply};
+use streamdeck_macos::media::InactiveMediaAdapter;
 use streamdeck_macos::meet::SystemMeetLauncher;
 use streamdeck_macos::notify::SystemNotifier;
 use streamdeck_macos::spotify::AppleScriptSpotifyAdapter;
@@ -44,6 +46,7 @@ pub struct Harness {
     pub keys: mpsc::UnboundedSender<KeyEvent>,
     pub events: mpsc::UnboundedSender<RuntimeEvent>,
     pub commands: Arc<FakeCommandRunner>,
+    pub wispr: Arc<FakeWisprAdapter>,
     pub store: StateStore,
     /// Kept alive so the state file's directory outlives the harness.
     _directory: tempfile::TempDir,
@@ -65,6 +68,7 @@ impl Harness {
         let commands = Arc::new(FakeCommandRunner::new());
         script(&commands);
         let runner = Arc::clone(&commands) as Arc<dyn CommandRunner>;
+        let wispr = Arc::new(FakeWisprAdapter::default());
 
         let services = Services {
             runner: Arc::clone(&runner),
@@ -76,6 +80,8 @@ impl Harness {
                 Arc::clone(&runner),
                 config.tools.clone(),
             )),
+            media: Arc::new(InactiveMediaAdapter),
+            wispr: Arc::clone(&wispr) as Arc<dyn streamdeck_macos::wispr::WisprAdapter>,
             notifier: Arc::new(SystemNotifier::new(
                 Arc::clone(&runner),
                 config.tools.clone(),
@@ -117,6 +123,7 @@ impl Harness {
             keys,
             events: sender,
             commands,
+            wispr,
             store,
             _directory: directory,
         }
@@ -289,6 +296,14 @@ fn prefill(state: &mut RuntimeState) {
     state.feeds.spotify.store(
         parse_status("paused\tTruth\tKamasi\tThe Epic\t\tspotify:track:1\t72\tfalse\toff")
             .expect("spotify"),
+        now_ms,
+    );
+    state.feeds.media.store(
+        MediaStatus {
+            application: Some("Google Chrome".to_string()),
+            source: Some("YouTube".to_string()),
+            title: Some("Deep Work Music".to_string()),
+        },
         now_ms,
     );
 }

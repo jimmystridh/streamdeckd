@@ -7,10 +7,14 @@ use clap::Parser;
 use streamdeck_core::config::Config;
 use streamdeck_core::model::Grid;
 use streamdeck_core::state::StateStore;
-use streamdeck_macos::audio::CommandAudioAdapter;
+#[cfg(target_os = "macos")]
+use streamdeck_macos::audio::CoreAudioAdapter;
+use streamdeck_macos::audio::{AudioAdapter, CommandAudioAdapter};
+use streamdeck_macos::media::SystemMediaAdapter;
 use streamdeck_macos::meet::SystemMeetLauncher;
 use streamdeck_macos::notify::SystemNotifier;
 use streamdeck_macos::spotify::AppleScriptSpotifyAdapter;
+use streamdeck_macos::wispr::SystemWisprAdapter;
 use streamdeck_macos::SystemCommandRunner;
 use streamdeck_render::Renderer;
 use tokio::sync::mpsc;
@@ -151,15 +155,21 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     };
 
     let runner = Arc::new(SystemCommandRunner::new());
+    let audio = audio_adapter(&runner, &config);
     let services = Services {
         runner: Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
-        audio: Arc::new(CommandAudioAdapter::new(
-            Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
-            config.tools.clone(),
-        )),
+        audio,
         spotify: Arc::new(AppleScriptSpotifyAdapter::new(
             Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
             config.tools.clone(),
+        )),
+        media: Arc::new(SystemMediaAdapter::new(
+            Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
+            config.tools.clone(),
+        )),
+        wispr: Arc::new(SystemWisprAdapter::new(
+            Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
+            config.tools.open.clone(),
         )),
         notifier: Arc::new(SystemNotifier::new(
             Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
@@ -309,6 +319,19 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     }
     tracing::info!(component = "runtime", "stopped");
     result.map(|()| Outcome::Completed)
+}
+
+fn audio_adapter(runner: &Arc<SystemCommandRunner>, config: &Config) -> Arc<dyn AudioAdapter> {
+    if config.audio.native {
+        #[cfg(target_os = "macos")]
+        {
+            return Arc::new(CoreAudioAdapter::new());
+        }
+    }
+    Arc::new(CommandAudioAdapter::new(
+        Arc::clone(runner) as Arc<dyn streamdeck_macos::CommandRunner>,
+        config.tools.clone(),
+    ))
 }
 
 fn spawn_screen_lock_monitor(

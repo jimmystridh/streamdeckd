@@ -27,6 +27,8 @@ pub enum DeadlineId {
     AlertSound,
     /// A pressed weather tile stops showing its expanded reading.
     WeatherDetail,
+    /// Home changes from today's weather to tomorrow at 17:00 and back at midnight.
+    HomeWeatherBoundary,
     /// An integration is due for a refresh.
     Refresh(IntegrationId),
 }
@@ -42,6 +44,7 @@ impl DeadlineId {
             DeadlineId::MeetingLabels => "meeting-labels".to_string(),
             DeadlineId::AlertSound => "alert-sound".to_string(),
             DeadlineId::WeatherDetail => "weather-detail".to_string(),
+            DeadlineId::HomeWeatherBoundary => "home-weather-boundary".to_string(),
             DeadlineId::Refresh(integration) => format!("refresh:{integration}"),
         }
     }

@@ -6,6 +6,8 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use streamdeck_core::integrations::codex::{parse_auth_file, CodexError};
 
@@ -15,6 +17,8 @@ pub const CLAUDE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 pub const CLAUDE_CREDENTIAL_FILE: &str = "~/.claude/.credentials.json";
 /// The Codex credential file.
 pub const CODEX_AUTH_FILE: &str = "~/.codex/auth.json";
+const CLAUDE_MEMORY_CACHE_VALIDITY_MS: i64 = 30 * 60 * 1_000;
+const CLAUDE_KEYCHAIN_RETRY_COOLDOWN_MS: i64 = 6 * 60 * 60 * 1_000;
 
 /// A bearer token that cannot be printed by accident.
 #[derive(Clone, PartialEq, Eq)]
@@ -55,11 +59,6 @@ pub enum CredentialError {
     ClaudeExpired,
     #[error("the Claude Code credential could not be read: {0}")]
     ClaudeUnreadable(String),
-    #[error(
-        "reading the Claude Code Keychain entry timed out; macOS is probably asking \
-         for authorization. Grant streamdeckd access once, or codesign the binary."
-    )]
-    ClaudeKeychainBlocked,
     #[error("no Codex credential found at {0}")]
     CodexMissing(String),
     #[error(transparent)]
@@ -80,6 +79,21 @@ impl ClaudeCredential {
             .is_some_and(|expires_at| expires_at <= now_ms)
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CredentialFileStamp {
+    modified: Option<SystemTime>,
+    length: u64,
+}
+
+#[derive(Default)]
+struct ClaudeCredentialState {
+    cached: Option<(ClaudeCredential, i64)>,
+    credential_file_stamp: Option<Option<CredentialFileStamp>>,
+    keychain_retry_at_ms: Option<i64>,
+}
+
+static CLAUDE_CREDENTIAL_STATE: OnceLock<Mutex<ClaudeCredentialState>> = OnceLock::new();
 
 /// Reads the OAuth section out of a Claude Code credential payload.
 pub fn parse_claude_credential(contents: &str) -> Result<ClaudeCredential, CredentialError> {
@@ -105,22 +119,28 @@ pub fn parse_claude_credential(contents: &str) -> Result<ClaudeCredential, Crede
     })
 }
 
-/// Reads the Claude Code credential: Keychain first, then the supported file.
+/// Reads the Claude Code credential without ever allowing background Keychain UI.
 ///
-/// Blocking. The Keychain read can wait on an authorization prompt, so callers run
-/// this off the async runtime and under a timeout.
+/// A fresh in-memory credential is reused for 30 minutes. Otherwise the supported
+/// credential file is preferred, followed by a Security.framework query that
+/// explicitly skips anything requiring authentication. An inaccessible Keychain
+/// item is not retried for six hours.
 pub fn claude_credential(now_ms: i64) -> Result<ClaudeCredential, CredentialError> {
     let file = crate::expand_home(CLAUDE_CREDENTIAL_FILE);
-    let contents = read_keychain(CLAUDE_KEYCHAIN_SERVICE)
-        .or_else(|| std::fs::read_to_string(&file).ok())
-        .ok_or_else(|| CredentialError::ClaudeMissing(file.clone()))?;
-    finish_claude(&contents, now_ms)
+    let state =
+        CLAUDE_CREDENTIAL_STATE.get_or_init(|| Mutex::new(ClaudeCredentialState::default()));
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .resolve(
+            now_ms,
+            Path::new(&file),
+            || read_keychain_without_ui(CLAUDE_KEYCHAIN_SERVICE),
+            || keychain_item_exists(CLAUDE_KEYCHAIN_SERVICE),
+        )
 }
 
 /// Validates and returns a credential from an already-read payload.
-///
-/// Used by both the Keychain path and the `security` fallback so expiry handling
-/// and error reporting are identical.
 pub fn finish_claude(contents: &str, now_ms: i64) -> Result<ClaudeCredential, CredentialError> {
     let credential = parse_claude_credential(contents)?;
     if credential.is_expired(now_ms) {
@@ -129,13 +149,75 @@ pub fn finish_claude(contents: &str, now_ms: i64) -> Result<ClaudeCredential, Cr
     Ok(credential)
 }
 
-/// The arguments that read the Claude Code entry through the `security` CLI.
-///
-/// A fallback for when the framework read is blocked on an authorization prompt:
-/// `security` is a system tool the user has typically already granted access to,
-/// so this recovers the tile without another dialog. Returns the raw JSON on stdout.
-pub fn security_cli_arguments() -> [&'static str; 4] {
-    ["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"]
+impl ClaudeCredentialState {
+    fn resolve(
+        &mut self,
+        now_ms: i64,
+        file: &Path,
+        read_keychain: impl FnOnce() -> Option<String>,
+        keychain_item_exists: impl FnOnce() -> bool,
+    ) -> Result<ClaudeCredential, CredentialError> {
+        let file_stamp = credential_file_stamp(file);
+        if self.credential_file_stamp != Some(file_stamp) {
+            self.cached = None;
+            self.credential_file_stamp = Some(file_stamp);
+        }
+
+        if let Some((credential, loaded_at_ms)) = &self.cached {
+            let cache_age_ms = now_ms.checked_sub(*loaded_at_ms);
+            if cache_age_ms.is_some_and(|age| {
+                (0..CLAUDE_MEMORY_CACHE_VALIDITY_MS).contains(&age)
+                    && !credential.is_expired(now_ms)
+            }) {
+                return Ok(credential.clone());
+            }
+            self.cached = None;
+        }
+
+        let mut last_error = match std::fs::read_to_string(file) {
+            Ok(contents) => match finish_claude(&contents, now_ms) {
+                Ok(credential) => return Ok(self.cache(credential, now_ms)),
+                Err(error) => Some(error),
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => Some(CredentialError::ClaudeUnreadable(error.to_string())),
+        };
+
+        if self
+            .keychain_retry_at_ms
+            .is_some_and(|retry_at| now_ms < retry_at)
+        {
+            return Err(last_error
+                .unwrap_or_else(|| CredentialError::ClaudeMissing(file.display().to_string())));
+        }
+
+        if let Some(contents) = read_keychain() {
+            self.keychain_retry_at_ms = None;
+            match finish_claude(&contents, now_ms) {
+                Ok(credential) => return Ok(self.cache(credential, now_ms)),
+                Err(error) => last_error = Some(error),
+            }
+        } else if keychain_item_exists() {
+            self.keychain_retry_at_ms =
+                Some(now_ms.saturating_add(CLAUDE_KEYCHAIN_RETRY_COOLDOWN_MS));
+        }
+
+        Err(last_error
+            .unwrap_or_else(|| CredentialError::ClaudeMissing(file.display().to_string())))
+    }
+
+    fn cache(&mut self, credential: ClaudeCredential, now_ms: i64) -> ClaudeCredential {
+        self.cached = Some((credential.clone(), now_ms));
+        credential
+    }
+}
+
+fn credential_file_stamp(path: &Path) -> Option<CredentialFileStamp> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(CredentialFileStamp {
+        modified: metadata.modified().ok(),
+        length: metadata.len(),
+    })
 }
 
 /// Reads the Codex credential from the configured override or its default path.
@@ -171,24 +253,27 @@ pub fn codex_credential_present(override_path: Option<&str>) -> bool {
     .exists()
 }
 
-/// Reads a generic password by service name.
-///
-/// Blocking, and potentially *very* blocking: macOS puts up an authorization
-/// prompt when the calling binary is not on the item's access-control list, which
-/// an unsigned build never is. Callers must run this off the async runtime and
-/// under a timeout.
+/// Reads a generic password only when macOS can return it without authentication.
 #[cfg(target_os = "macos")]
-fn read_keychain(service: &str) -> Option<String> {
+fn read_keychain_without_ui(service: &str) -> Option<String> {
+    use objc2::rc::Retained;
+    use objc2_local_authentication::LAContext;
     use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
 
-    // Search by service only. Claude Code stores the entry under the macOS short
-    // username, which this daemon must not assume or hard-code.
-    let results = ItemSearchOptions::new()
+    let context = unsafe { LAContext::new() };
+    unsafe { context.setInteractionNotAllowed(true) };
+
+    let mut options = ItemSearchOptions::new();
+    options
         .class(ItemClass::generic_password())
         .service(service)
         .load_data(true)
-        .search()
-        .ok()?;
+        .skip_authenticated_items(true);
+    #[allow(deprecated)]
+    unsafe {
+        options.authentication_context(Retained::into_raw(context).cast());
+    }
+    let results = options.search().ok()?;
 
     results.into_iter().find_map(|result| match result {
         SearchResult::Data(bytes) => String::from_utf8(bytes).ok(),
@@ -197,7 +282,7 @@ fn read_keychain(service: &str) -> Option<String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn read_keychain(_service: &str) -> Option<String> {
+fn read_keychain_without_ui(_service: &str) -> Option<String> {
     None
 }
 
@@ -266,21 +351,6 @@ mod tests {
     }
 
     #[test]
-    fn the_security_cli_arguments_ask_only_for_this_one_item() {
-        let arguments = security_cli_arguments();
-        assert_eq!(arguments[0], "find-generic-password");
-        assert_eq!(arguments[2], CLAUDE_KEYCHAIN_SERVICE);
-        assert!(
-            arguments.contains(&"-w"),
-            "the password itself is requested"
-        );
-        assert!(
-            !arguments.iter().any(|argument| argument.contains("..")),
-            "no path traversal is possible"
-        );
-    }
-
-    #[test]
     fn finishing_from_a_payload_applies_the_same_expiry_rule() {
         let fresh = finish_claude(CLAUDE, 1_784_941_859_947).expect("not expired");
         assert_eq!(fresh.access_token.expose(), "sk-ant-oat-super-secret");
@@ -329,6 +399,84 @@ mod tests {
 
         let error = CredentialError::ClaudeUnreadable("payload has no access token".into());
         assert!(!error.to_string().contains("sk-ant"));
+    }
+
+    #[test]
+    fn the_credential_file_is_preferred_to_keychain_access() {
+        let file = tempfile::NamedTempFile::new().expect("credential file");
+        std::fs::write(
+            file.path(),
+            r#"{"claudeAiOauth":{"accessToken":"from-file"}}"#,
+        )
+        .expect("write credential");
+        let mut state = ClaudeCredentialState::default();
+
+        let credential = state
+            .resolve(
+                1_000,
+                file.path(),
+                || panic!("the Keychain should not be queried"),
+                || panic!("Keychain presence should not be queried"),
+            )
+            .expect("file credential");
+
+        assert_eq!(credential.access_token.expose(), "from-file");
+    }
+
+    #[test]
+    fn a_keychain_credential_is_cached_for_thirty_minutes() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let missing_file = directory.path().join("credentials.json");
+        let mut state = ClaudeCredentialState::default();
+        let credential = state
+            .resolve(
+                1_000,
+                &missing_file,
+                || Some(r#"{"claudeAiOauth":{"accessToken":"cached"}}"#.to_string()),
+                || panic!("a successful read needs no presence query"),
+            )
+            .expect("Keychain credential");
+        assert_eq!(credential.access_token.expose(), "cached");
+
+        let credential = state
+            .resolve(
+                1_000 + CLAUDE_MEMORY_CACHE_VALIDITY_MS - 1,
+                &missing_file,
+                || panic!("the fresh cache should avoid the Keychain"),
+                || panic!("the fresh cache should avoid the Keychain"),
+            )
+            .expect("cached credential");
+        assert_eq!(credential.access_token.expose(), "cached");
+    }
+
+    #[test]
+    fn an_inaccessible_keychain_item_has_a_six_hour_retry_cooldown() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let missing_file = directory.path().join("credentials.json");
+        let mut state = ClaudeCredentialState::default();
+
+        state
+            .resolve(1_000, &missing_file, || None, || true)
+            .expect_err("inaccessible");
+
+        state
+            .resolve(
+                1_000 + CLAUDE_KEYCHAIN_RETRY_COOLDOWN_MS - 1,
+                &missing_file,
+                || panic!("the cooldown should suppress the Keychain read"),
+                || panic!("the cooldown should suppress the presence query"),
+            )
+            .expect_err("still inaccessible");
+
+        let credential = state
+            .resolve(
+                1_000 + CLAUDE_KEYCHAIN_RETRY_COOLDOWN_MS,
+                &missing_file,
+                || Some(r#"{"claudeAiOauth":{"accessToken":"available"}}"#.to_string()),
+                || panic!("a successful read needs no presence query"),
+            )
+            .expect("retried after cooldown");
+        assert_eq!(credential.access_token.expose(), "available");
     }
 
     #[test]

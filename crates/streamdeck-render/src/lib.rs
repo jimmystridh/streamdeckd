@@ -1003,6 +1003,7 @@ mod tests {
         let icons = [
             Icon::Play,
             Icon::Pause,
+            Icon::PlayPause,
             Icon::Next,
             Icon::Previous,
             Icon::Skip,

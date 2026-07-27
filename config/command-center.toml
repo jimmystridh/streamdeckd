@@ -50,8 +50,41 @@ replacement = "admin."
 warning_percent = 50
 critical_percent = 80
 
+[wispr]
+[[wispr.microphones]]
+label = "MacBook"
+name = "Built-in mic"
+
+[[wispr.microphones]]
+label = "Bose"
+name = "Bose NC 700 Headphones"
+
+[[wispr.microphones]]
+label = "RØDE"
+name = "RODE NT-USB"
+
+[[spotify.playlists]]
+label = "Recent 1"
+uri = "spotify:playlist:1jnizfcJFNGVeJgmp7ngK9"
+
+[[spotify.playlists]]
+label = "Recent 2"
+uri = "spotify:playlist:37i9dQZF1FgnTBfUlzkeKt"
+
+[[spotify.playlists]]
+label = "Recent 3"
+uri = "spotify:playlist:37i9dQZF1DXc1uuASu7T9L"
+
+[[spotify.playlists]]
+label = "Recent 4"
+uri = "spotify:playlist:37i9dQZF1DZ06evO0mG1Nf"
+
+[[spotify.playlists]]
+label = "Recent 5"
+uri = "spotify:playlist:5wfnsIyPt3QK5XfPLjgv1i"
+
 [audio]
-native = false
+native = true
 
 [[audio.output]]
 label = "MacBook"
@@ -63,7 +96,11 @@ exact = "Bose NC 700 Headphones"
 
 [[audio.output]]
 label = "USB Home"
-pattern = "usb"
+exact = "USB audio CODEC"
+
+[[audio.output]]
+label = "AirPods"
+exact = "Jimmy’s AirPods - Find My"
 
 [[audio.input]]
 label = "MacBook Mic"

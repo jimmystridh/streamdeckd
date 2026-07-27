@@ -16,6 +16,7 @@ use streamdeck_core::integrations::claude::{ClaudeUsage, UsageWindow};
 use streamdeck_core::integrations::codex::{CodexUsage, CodexWindow};
 use streamdeck_core::integrations::github::{parse_search, GitHubSnapshot};
 use streamdeck_core::integrations::lake::{parse_current, parse_history};
+use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::{parse_status, SpotifyStatus};
 use streamdeck_core::integrations::weather::parse_forecast;
@@ -69,7 +70,8 @@ fn output_targets() -> Vec<AudioTarget> {
     targets(&[
         ("MacBook", Some("MacBook Pro Speakers"), None),
         ("Bose", Some("Bose NC 700 Headphones"), None),
-        ("USB Home", None, Some("usb")),
+        ("USB Home", Some("USB audio CODEC"), None),
+        ("AirPods", Some("Jimmy’s AirPods - Find My"), None),
     ])
 }
 
@@ -169,6 +171,11 @@ fn healthy() -> WorldView {
         )
         .expect("spotify"),
     );
+    world.media = Feed::Ready(MediaStatus {
+        application: Some("Google Chrome".to_string()),
+        source: Some("YouTube".to_string()),
+        title: Some("Deep Work Music".to_string()),
+    });
 
     world.panel_total_seconds = 10;
     world
@@ -179,7 +186,12 @@ fn healthy() -> WorldView {
 fn sheet(renderer: &mut Renderer, page: PageId, world: &WorldView) -> image::RgbImage {
     let output = output_targets();
     let input = input_targets();
-    let context = RenderContext::new(world).with_audio(&output, &input);
+    let config = streamdeck_core::config::Config::parse(streamdeck_core::config::TEMPLATE)
+        .expect("template config");
+    let context = RenderContext::new(world)
+        .with_audio(&output, &input)
+        .with_spotify_playlists(&config.spotify.playlists)
+        .with_wispr_microphones(&config.wispr.microphones);
     let grid = Grid::MK2;
     let gutter = 2u32;
     let width = grid.columns as u32 * (KEY_SIZE + gutter) + gutter;
@@ -189,7 +201,10 @@ fn sheet(renderer: &mut Renderer, page: PageId, world: &WorldView) -> image::Rgb
     for binding in full_page(page, grid) {
         let mut view = render(binding.tile, &context);
         // Show the long-press affordance wherever a page defines one.
-        if binding.has_long_action() && page == PageId::Home && binding.position.column == 3 {
+        if binding.has_long_action()
+            && page == PageId::Home
+            && binding.position == streamdeck_core::model::KeyPosition::new(2, 3)
+        {
             view.armed = true;
         }
         let key = renderer.render(&view).expect("rendered");
@@ -205,7 +220,12 @@ fn sheet(renderer: &mut Renderer, page: PageId, world: &WorldView) -> image::Rgb
 fn strip(renderer: &mut Renderer, tiles: &[Tile], world: &WorldView) -> image::RgbImage {
     let output = output_targets();
     let input = input_targets();
-    let context = RenderContext::new(world).with_audio(&output, &input);
+    let config = streamdeck_core::config::Config::parse(streamdeck_core::config::TEMPLATE)
+        .expect("template config");
+    let context = RenderContext::new(world)
+        .with_audio(&output, &input)
+        .with_spotify_playlists(&config.spotify.playlists)
+        .with_wispr_microphones(&config.wispr.microphones);
     let gutter = 2u32;
     let width = tiles.len() as u32 * (KEY_SIZE + gutter) + gutter;
     let mut canvas =
@@ -309,19 +329,18 @@ fn home_has_failed() {
 }
 
 #[test]
-fn mixer_shows_selected_unavailable_and_ambiguous_devices() {
+fn mixer_shows_selected_available_and_unavailable_devices() {
     let mut renderer = Renderer::new().expect("renderer");
     let mut world = healthy();
-    // Two USB matches make the `usb` pattern ambiguous, and the RØDE is absent.
     if let Feed::Ready(snapshot) = &mut world.audio {
         snapshot
             .inventory
             .outputs
-            .push("Scarlett 2i2 USB".to_string());
+            .push("USB audio CODEC".to_string());
         snapshot
             .inventory
             .outputs
-            .push("RØDE NT-USB Mini".to_string());
+            .push("Jimmy’s AirPods - Find My".to_string());
     }
     check("mixer", &sheet(&mut renderer, PageId::Mixer, &world));
 }
@@ -371,6 +390,18 @@ fn spotify_is_playing() {
 }
 
 #[test]
+fn media_page_shows_transport_owner_and_system_volume() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check("media", &sheet(&mut renderer, PageId::Media, &healthy()));
+}
+
+#[test]
+fn wispr_page_shows_the_configured_microphone_picker() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check("wispr", &sheet(&mut renderer, PageId::Wispr, &healthy()));
+}
+
+#[test]
 fn spotify_is_not_running() {
     let mut renderer = Renderer::new().expect("renderer");
     let mut world = healthy();
@@ -409,6 +440,15 @@ fn stensjon_panel_is_healthy() {
     let mut world = healthy();
     world.panel_seconds_remaining = Some(7);
     check("stensjon", &sheet(&mut renderer, PageId::Stensjon, &world));
+}
+
+#[test]
+fn weather_page_shows_the_week_ahead_and_water_history() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check(
+        "weather",
+        &sheet(&mut renderer, PageId::Weather, &healthy()),
+    );
 }
 
 #[test]

@@ -119,7 +119,7 @@ async fn pressing_a_blank_key_is_refused_with_an_explanation() {
         &mut harness,
         &path,
         Request::Press {
-            position: KeyPosition::new(3, 1),
+            position: KeyPosition::new(2, 1),
         },
     )
     .await;

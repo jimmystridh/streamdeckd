@@ -9,6 +9,7 @@ pub mod claude;
 pub mod codex;
 pub mod github;
 pub mod lake;
+pub mod media;
 pub mod meetings;
 pub mod spotify;
 pub mod weather;

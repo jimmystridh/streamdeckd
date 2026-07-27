@@ -66,6 +66,8 @@ pub mod intervals {
     /// daemon's dominant idle cost. Ten seconds is imperceptible on a glance —
     /// and a press refreshes immediately anyway, so interaction stays instant.
     pub const SPOTIFY_GLANCE: Duration = Duration::from_secs(10);
+    /// Native MediaRemote lookup while the generic media page is visible.
+    pub const MEDIA_SESSION: Duration = Duration::from_secs(5);
     /// How long to wait before retrying after a failure, while stale data shows.
     pub const ERROR_RETRY: Duration = Duration::from_secs(5 * 60);
 }
@@ -108,6 +110,7 @@ mod tests {
         assert_eq!(intervals::USAGE.as_secs(), 300);
         assert_eq!(intervals::SPOTIFY_PAGE.as_secs(), 2);
         assert_eq!(intervals::SPOTIFY_GLANCE.as_secs(), 10);
+        assert_eq!(intervals::MEDIA_SESSION.as_secs(), 5);
         assert_eq!(intervals::ERROR_RETRY.as_secs(), 300);
     }
 

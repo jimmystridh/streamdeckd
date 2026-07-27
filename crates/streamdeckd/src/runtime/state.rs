@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Days, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use streamdeck_core::cache::{CachePolicy, Cached};
 use streamdeck_core::config::Config;
@@ -18,6 +18,7 @@ use streamdeck_core::integrations::claude::ClaudeUsage;
 use streamdeck_core::integrations::codex::CodexUsage;
 use streamdeck_core::integrations::github::GitHubSnapshot;
 use streamdeck_core::integrations::lake::{LakeHistory, LakeReading};
+use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::SpotifyStatus;
 use streamdeck_core::integrations::weather::WeatherSnapshot;
@@ -44,6 +45,7 @@ pub struct Feeds {
     pub claude: Cached<ClaudeUsage>,
     pub codex: Cached<CodexUsage>,
     pub spotify: Cached<SpotifyStatus>,
+    pub media: Cached<MediaStatus>,
 }
 
 impl Default for Feeds {
@@ -67,6 +69,10 @@ impl Default for Feeds {
                 millis(intervals::SPOTIFY_GLANCE),
                 millis(intervals::SPOTIFY_GLANCE),
             )),
+            media: Cached::new(CachePolicy::new(
+                millis(intervals::MEDIA_SESSION),
+                millis(intervals::MEDIA_SESSION),
+            )),
         }
     }
 }
@@ -86,6 +92,7 @@ impl Feeds {
             IntegrationId::ClaudeUsage => self.claude.needs_fetch(now_ms),
             IntegrationId::CodexUsage => self.codex.needs_fetch(now_ms),
             IntegrationId::Spotify => self.spotify.needs_fetch(now_ms),
+            IntegrationId::MediaSession => self.media.needs_fetch(now_ms),
         }
     }
 
@@ -103,6 +110,7 @@ impl Feeds {
             IntegrationId::ClaudeUsage => self.claude.expires_at_ms(),
             IntegrationId::CodexUsage => self.codex.expires_at_ms(),
             IntegrationId::Spotify => self.spotify.expires_at_ms(),
+            IntegrationId::MediaSession => self.media.expires_at_ms(),
         }
     }
 
@@ -118,6 +126,7 @@ impl Feeds {
             IntegrationId::ClaudeUsage => self.claude.invalidate(),
             IntegrationId::CodexUsage => self.codex.invalidate(),
             IntegrationId::Spotify => self.spotify.invalidate(),
+            IntegrationId::MediaSession => self.media.invalidate(),
         }
     }
 
@@ -158,6 +167,7 @@ pub struct RuntimeState {
     pub audio_input: Vec<AudioTarget>,
     /// Set while a Pomodoro completion is unacknowledged.
     pub alert_flashing: bool,
+    pub wispr_hands_free: bool,
     /// The weather tile showing its expanded reading, and when it reverts.
     pub weather_detail: Option<(WeatherTile, u64)>,
 }
@@ -194,6 +204,7 @@ impl RuntimeState {
             audio_output,
             audio_input,
             alert_flashing: false,
+            wispr_hands_free: false,
             weather_detail: None,
         }
     }
@@ -242,6 +253,7 @@ impl RuntimeState {
                 .collect(),
             pomodoro,
             pomodoro_alert_flashing: self.alert_flashing,
+            wispr_hands_free: self.wispr_hands_free,
             audio: Feeds::feed(&self.feeds.audio),
             meetings: Feeds::feed(&self.feeds.meetings),
             weather: Feeds::feed(&self.feeds.weather),
@@ -251,6 +263,7 @@ impl RuntimeState {
             claude: Feeds::feed(&self.feeds.claude),
             codex: Feeds::feed(&self.feeds.codex),
             spotify: Feeds::feed(&self.feeds.spotify),
+            media: Feeds::feed(&self.feeds.media),
             weather_detail: self
                 .weather_detail
                 .filter(|(_, until)| now_ms < *until)
@@ -316,6 +329,19 @@ impl RuntimeState {
         } else {
             self.deadlines.clear(DeadlineId::MeetingLabels);
         }
+
+        self.schedule_home_weather_boundary(Utc::now(), now_ms);
+    }
+
+    pub fn schedule_home_weather_boundary(&mut self, now: DateTime<Utc>, now_ms: u64) {
+        self.deadlines.clear(DeadlineId::HomeWeatherBoundary);
+        if self.visible_page() != PageId::Home {
+            return;
+        }
+        let boundary = next_home_weather_boundary(now, self.timezone);
+        let remaining = (boundary - now).num_milliseconds().max(1) as u64;
+        self.deadlines
+            .set(DeadlineId::HomeWeatherBoundary, now_ms + remaining);
     }
 
     /// Schedules the Pomodoro completion and, when a countdown is on screen, the
@@ -355,6 +381,26 @@ impl RuntimeState {
             .entry(id)
             .or_insert_with(|| Backoff::new(millis(intervals::ERROR_RETRY), 30 * 60_000))
     }
+}
+
+fn next_home_weather_boundary(now: DateTime<Utc>, timezone: Tz) -> DateTime<Utc> {
+    let local = now.with_timezone(&timezone);
+    let (date, hour) = if local.hour() < 17 {
+        (local.date_naive(), 17)
+    } else {
+        (
+            local
+                .date_naive()
+                .checked_add_days(Days::new(1))
+                .expect("the next calendar day is representable"),
+            0,
+        )
+    };
+    timezone
+        .with_ymd_and_hms(date.year(), date.month(), date.day(), hour, 0, 0)
+        .single()
+        .expect("midnight and 17:00 are unambiguous in configured timezones")
+        .with_timezone(&Utc)
 }
 
 fn audio_targets(config: &Config) -> (Vec<AudioTarget>, Vec<AudioTarget>) {
@@ -410,7 +456,7 @@ mod tests {
     #[test]
     fn configured_audio_targets_are_compiled_once() {
         let state = state();
-        assert_eq!(state.audio_output.len(), 3);
+        assert_eq!(state.audio_output.len(), 4);
         assert_eq!(state.audio_input.len(), 3);
         assert_eq!(state.audio_output[0].label, "MacBook");
     }
@@ -430,6 +476,12 @@ mod tests {
 
         state.navigator.go_to(PageId::Spotify);
         assert_eq!(state.due_integrations(1_000), vec![IntegrationId::Spotify]);
+
+        state.navigator.go_to(PageId::Media);
+        assert_eq!(
+            state.due_integrations(1_000),
+            vec![IntegrationId::MediaSession, IntegrationId::AudioStatus]
+        );
     }
 
     #[test]
@@ -669,6 +721,25 @@ mod tests {
             state.world(now(), 7_000).weather_detail,
             None,
             "a stale window must never survive a missed deadline"
+        );
+    }
+
+    #[test]
+    fn the_home_weather_boundary_is_seventeen_then_midnight_in_local_time() {
+        let before = DateTime::parse_from_rfc3339("2026-07-24T14:59:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        assert_eq!(
+            next_home_weather_boundary(before, chrono_tz::Europe::Stockholm).to_rfc3339(),
+            "2026-07-24T15:00:00+00:00"
+        );
+
+        let after = DateTime::parse_from_rfc3339("2026-07-24T15:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&Utc);
+        assert_eq!(
+            next_home_weather_boundary(after, chrono_tz::Europe::Stockholm).to_rfc3339(),
+            "2026-07-24T22:00:00+00:00"
         );
     }
 

@@ -11,6 +11,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::command::{CommandError, CommandRunner, Output};
+use crate::wispr::{WisprAdapter, WisprError};
 
 /// What a scripted invocation should do.
 #[derive(Debug, Clone)]
@@ -172,6 +173,42 @@ impl CommandRunner for FakeCommandRunner {
                 ),
             }),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WisprInvocation {
+    HandsFree(bool),
+    Microphone(String),
+}
+
+#[derive(Debug, Default)]
+pub struct FakeWisprAdapter {
+    calls: Mutex<Vec<WisprInvocation>>,
+}
+
+impl FakeWisprAdapter {
+    pub fn calls(&self) -> Vec<WisprInvocation> {
+        self.calls.lock().expect("fake Wispr lock").clone()
+    }
+}
+
+#[async_trait]
+impl WisprAdapter for FakeWisprAdapter {
+    async fn set_hands_free(&self, enabled: bool) -> Result<(), WisprError> {
+        self.calls
+            .lock()
+            .expect("fake Wispr lock")
+            .push(WisprInvocation::HandsFree(enabled));
+        Ok(())
+    }
+
+    async fn select_microphone(&self, name: &str) -> Result<(), WisprError> {
+        self.calls
+            .lock()
+            .expect("fake Wispr lock")
+            .push(WisprInvocation::Microphone(name.to_string()));
+        Ok(())
     }
 }
 

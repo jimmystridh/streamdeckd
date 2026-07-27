@@ -21,9 +21,11 @@ use streamdeck_core::pomodoro;
 use streamdeck_core::press::PressOutcome;
 use streamdeck_core::state::Durability;
 use streamdeck_macos::audio::AudioAdapter;
+use streamdeck_macos::media::MediaAdapter;
 use streamdeck_macos::meet::MeetLauncher;
 use streamdeck_macos::notify::Notifier;
 use streamdeck_macos::spotify::SpotifyAdapter;
+use streamdeck_macos::wispr::WisprAdapter;
 use streamdeck_macos::CommandRunner;
 use streamdeck_render::Renderer;
 use tokio::sync::{mpsc, oneshot};
@@ -68,6 +70,8 @@ pub struct Services {
     pub runner: Arc<dyn CommandRunner>,
     pub audio: Arc<dyn AudioAdapter>,
     pub spotify: Arc<dyn SpotifyAdapter>,
+    pub media: Arc<dyn MediaAdapter>,
+    pub wispr: Arc<dyn WisprAdapter>,
     pub notifier: Arc<dyn Notifier>,
     pub meet: Arc<dyn MeetLauncher>,
     pub http: HttpClient,
@@ -379,6 +383,11 @@ impl Runtime {
                     self.state.weather_detail = None;
                     repaint = true;
                 }
+                DeadlineId::HomeWeatherBoundary => {
+                    self.state
+                        .schedule_home_weather_boundary(Utc::now(), now_ms);
+                    repaint = true;
+                }
                 DeadlineId::Refresh(integration) => {
                     self.spawn_refresh(integration, now_ms);
                 }
@@ -542,6 +551,7 @@ impl Runtime {
                     .unwrap_or(Action::None);
                 self.execute(action).await;
             }
+            PressOutcome::LongPressReleased(_) => self.render().await,
             _ => self.render().await,
         }
     }
@@ -803,6 +813,9 @@ impl Runtime {
             self.state.persistent.input_volume_before_mute = volume;
             self.persist(Durability::Normal);
         }
+        if let Some(enabled) = outcome.wispr_hands_free {
+            self.state.wispr_hands_free = enabled;
+        }
         for id in outcome.invalidate {
             self.state.feeds.invalidate(id);
         }
@@ -821,7 +834,9 @@ impl Runtime {
         let now_ms = self.now_ms();
         let world = self.state.world(Utc::now(), now_ms);
         let context = RenderContext::new(&world)
-            .with_audio(&self.state.audio_output, &self.state.audio_input);
+            .with_audio(&self.state.audio_output, &self.state.audio_input)
+            .with_spotify_playlists(&self.state.config.spotify.playlists)
+            .with_wispr_microphones(&self.state.config.wispr.microphones);
         let page = self.state.visible_page();
 
         let mut payloads = HashMap::new();
@@ -856,7 +871,9 @@ impl Runtime {
         let now_ms = self.now_ms();
         let world = self.state.world(Utc::now(), now_ms);
         let context = RenderContext::new(&world)
-            .with_audio(&self.state.audio_output, &self.state.audio_input);
+            .with_audio(&self.state.audio_output, &self.state.audio_input)
+            .with_spotify_playlists(&self.state.config.spotify.playlists)
+            .with_wispr_microphones(&self.state.config.wispr.microphones);
         let Some(binding) = self.binding(position).or_else(|| {
             pages::full_page(self.state.visible_page(), streamdeck_core::model::Grid::MK2)
                 .into_iter()
@@ -1131,7 +1148,9 @@ impl Runtime {
         let now_ms = self.now_ms();
         let world = self.state.world(Utc::now(), now_ms);
         let context = RenderContext::new(&world)
-            .with_audio(&self.state.audio_output, &self.state.audio_input);
+            .with_audio(&self.state.audio_output, &self.state.audio_input)
+            .with_spotify_playlists(&self.state.config.spotify.playlists)
+            .with_wispr_microphones(&self.state.config.wispr.microphones);
         let grid = streamdeck_core::model::Grid::MK2;
         let gutter = 4u32;
         let size = streamdeck_render::KEY_SIZE;
@@ -1221,6 +1240,13 @@ impl Runtime {
                 "total_focus_minutes": pomodoro.total_focus_minutes,
                 "pending_completion": pomodoro.pending_completion_phase.map(|phase| phase.slug()),
                 "alert_helper_running": self.alert.as_ref().is_some_and(AlertState::helper_running),
+            },
+            "wispr": {
+                "hands_free": self.state.wispr_hands_free,
+                "microphones": self.state.config.wispr.microphones
+                    .iter()
+                    .map(|microphone| microphone.label.as_str())
+                    .collect::<Vec<_>>(),
             },
         })
     }

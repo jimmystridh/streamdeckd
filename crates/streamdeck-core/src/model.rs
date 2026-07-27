@@ -85,7 +85,7 @@ impl Grid {
     }
 }
 
-/// The six pages of the Command Center layout.
+/// The pages of the Command Center layout.
 ///
 /// The numeric order matches the historical Elgato profile page order so state
 /// imported from the old profile keeps pointing at the same page.
@@ -98,16 +98,22 @@ pub enum PageId {
     Spotify,
     Stensjon,
     Pomodoro,
+    Weather,
+    Media,
+    Wispr,
 }
 
 impl PageId {
-    pub const ALL: [PageId; 6] = [
+    pub const ALL: [PageId; 9] = [
         PageId::Home,
         PageId::Mixer,
         PageId::GitHub,
         PageId::Spotify,
         PageId::Stensjon,
         PageId::Pomodoro,
+        PageId::Weather,
+        PageId::Media,
+        PageId::Wispr,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -118,6 +124,9 @@ impl PageId {
             PageId::Spotify => "spotify",
             PageId::Stensjon => "stensjon",
             PageId::Pomodoro => "pomodoro",
+            PageId::Weather => "weather",
+            PageId::Media => "media",
+            PageId::Wispr => "wispr",
         }
     }
 
@@ -129,6 +138,9 @@ impl PageId {
             PageId::Spotify => "Spotify",
             PageId::Stensjon => "Stensjön",
             PageId::Pomodoro => "Pomodoro",
+            PageId::Weather => "Weather",
+            PageId::Media => "Media",
+            PageId::Wispr => "Wispr Flow",
         }
     }
 
@@ -140,6 +152,9 @@ impl PageId {
             PageId::Spotify => 3,
             PageId::Stensjon => 4,
             PageId::Pomodoro => 5,
+            PageId::Weather => 6,
+            PageId::Media => 7,
+            PageId::Wispr => 8,
         }
     }
 }
@@ -151,7 +166,9 @@ impl fmt::Display for PageId {
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[error("unknown page; expected one of home, mixer, github, spotify, stensjon, pomodoro")]
+#[error(
+    "unknown page; expected one of home, mixer, github, spotify, stensjon, pomodoro, weather, media, wispr"
+)]
 pub struct PageIdParseError;
 
 impl FromStr for PageId {
@@ -165,6 +182,9 @@ impl FromStr for PageId {
             "spotify" => Ok(PageId::Spotify),
             "stensjon" | "stensjön" | "lake" => Ok(PageId::Stensjon),
             "pomodoro" => Ok(PageId::Pomodoro),
+            "weather" => Ok(PageId::Weather),
+            "media" => Ok(PageId::Media),
+            "wispr" | "microphone" | "mic" => Ok(PageId::Wispr),
             _ => Err(PageIdParseError),
         }
     }
@@ -184,10 +204,11 @@ pub enum IntegrationId {
     ClaudeUsage,
     CodexUsage,
     Spotify,
+    MediaSession,
 }
 
 impl IntegrationId {
-    pub const ALL: [IntegrationId; 10] = [
+    pub const ALL: [IntegrationId; 11] = [
         IntegrationId::AudioStatus,
         IntegrationId::AudioInventory,
         IntegrationId::Meetings,
@@ -198,6 +219,7 @@ impl IntegrationId {
         IntegrationId::ClaudeUsage,
         IntegrationId::CodexUsage,
         IntegrationId::Spotify,
+        IntegrationId::MediaSession,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -212,6 +234,7 @@ impl IntegrationId {
             IntegrationId::ClaudeUsage => "claude-usage",
             IntegrationId::CodexUsage => "codex-usage",
             IntegrationId::Spotify => "spotify",
+            IntegrationId::MediaSession => "media-session",
         }
     }
 }
@@ -236,6 +259,7 @@ impl FromStr for IntegrationId {
             "lake" => Some(IntegrationId::LakeCurrent),
             "claude" => Some(IntegrationId::ClaudeUsage),
             "codex" => Some(IntegrationId::CodexUsage),
+            "media" => Some(IntegrationId::MediaSession),
             _ => None,
         };
         IntegrationId::ALL
@@ -325,6 +349,10 @@ mod tests {
         assert_eq!(
             "lake_history".parse::<IntegrationId>(),
             Ok(IntegrationId::LakeHistory)
+        );
+        assert_eq!(
+            "media".parse::<IntegrationId>(),
+            Ok(IntegrationId::MediaSession)
         );
         assert!("nope".parse::<IntegrationId>().is_err());
     }

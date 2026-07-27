@@ -3,19 +3,12 @@
 //! Both read an existing credential the user already has, hold the token only for
 //! the duration of one request, and never log any part of it.
 
-use std::sync::Arc;
-
 use streamdeck_core::integrations::claude::{self, ClaudeUsage, BETA_HEADER};
 use streamdeck_core::integrations::codex::{self, CodexUsage};
-use streamdeck_macos::credentials::{self, ClaudeCredential, CredentialError};
-use streamdeck_macos::{timeouts as tool_timeouts, CommandRunner};
+use streamdeck_macos::credentials::{self, CredentialError};
 
 use super::http::{HttpClient, HttpError};
 use super::timeouts;
-
-/// How long to wait for the Keychain. A blocked read means macOS is showing an
-/// authorization prompt; the tile reports that rather than stalling forever.
-const KEYCHAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Debug, thiserror::Error)]
 pub enum UsageError {
@@ -29,13 +22,12 @@ pub enum UsageError {
     Codex(#[from] codex::CodexError),
 }
 
-pub async fn fetch_claude(
-    client: &HttpClient,
-    runner: &Arc<dyn CommandRunner>,
-    security: &str,
-    now_ms: i64,
-) -> Result<ClaudeUsage, UsageError> {
-    let credential = claude_credential(runner, security, now_ms).await?;
+pub async fn fetch_claude(client: &HttpClient, now_ms: i64) -> Result<ClaudeUsage, UsageError> {
+    let credential = tokio::task::spawn_blocking(move || credentials::claude_credential(now_ms))
+        .await
+        .map_err(|error| {
+            UsageError::Credential(CredentialError::ClaudeUnreadable(error.to_string()))
+        })??;
     let authorization = format!("Bearer {}", credential.access_token.expose());
 
     let response = client
@@ -85,91 +77,9 @@ pub async fn fetch_codex(
     Ok(codex::parse_usage(&response.body)?)
 }
 
-/// Resolves the Claude credential, preferring the Security framework and falling
-/// back to the `security` CLI.
-///
-/// The framework read is blocking and can wait indefinitely on an authorization
-/// prompt, which an unsigned or newly-signed binary always triggers. It therefore
-/// runs on a blocking thread under a timeout; when that expires, `security` — a
-/// system tool the user has usually already granted access to — is asked instead.
-async fn claude_credential(
-    runner: &Arc<dyn CommandRunner>,
-    security: &str,
-    now_ms: i64,
-) -> Result<ClaudeCredential, UsageError> {
-    resolve_claude_credential(credentials::claude_credential, runner, security, now_ms).await
-}
-
-/// How the Claude payload is read from the Keychain.
-///
-/// Injected because the machine's Keychain contents and its per-binary access
-/// grants are outside this daemon's control. A test that reached the real Keychain
-/// would pass or fail depending on the developer's local grants — and did.
-type KeychainReader = fn(i64) -> Result<ClaudeCredential, CredentialError>;
-
-async fn resolve_claude_credential(
-    read_keychain: KeychainReader,
-    runner: &Arc<dyn CommandRunner>,
-    security: &str,
-    now_ms: i64,
-) -> Result<ClaudeCredential, UsageError> {
-    let framework = tokio::time::timeout(
-        KEYCHAIN_TIMEOUT,
-        tokio::task::spawn_blocking(move || read_keychain(now_ms)),
-    )
-    .await;
-
-    match framework {
-        Ok(Ok(Ok(credential))) => return Ok(credential),
-        // An expired token is a real answer: falling back cannot improve on it.
-        Ok(Ok(Err(CredentialError::ClaudeExpired))) => {
-            return Err(UsageError::Credential(CredentialError::ClaudeExpired))
-        }
-        Ok(Ok(Err(error))) => {
-            tracing::debug!(
-                component = "claude-usage",
-                error = %error,
-                "the framework read failed; trying the security CLI"
-            );
-        }
-        Ok(Err(error)) => {
-            tracing::warn!(
-                component = "claude-usage",
-                error = %error,
-                "the framework read panicked; trying the security CLI"
-            );
-        }
-        Err(_) => tracing::info!(
-            component = "claude-usage",
-            "the Keychain did not answer; trying the security CLI"
-        ),
-    }
-
-    let output = runner
-        .run(
-            security,
-            &credentials::security_cli_arguments(),
-            tool_timeouts::LOCAL,
-        )
-        .await
-        .map_err(|_| UsageError::Credential(CredentialError::ClaudeKeychainBlocked))?;
-
-    Ok(credentials::finish_claude(output.trimmed(), now_ms)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use streamdeck_macos::fake::{FakeCommandRunner, Reply};
-
-    const CLAUDE_PAYLOAD: &str =
-        r#"{"claudeAiOauth":{"accessToken":"tok","expiresAt":4102444800000}}"#;
-
-    fn runner(reply: Reply) -> Arc<dyn CommandRunner> {
-        let fake = Arc::new(FakeCommandRunner::new());
-        fake.fallback(reply);
-        fake as Arc<dyn CommandRunner>
-    }
 
     #[test]
     fn the_endpoints_and_beta_header_match_the_plan() {
@@ -184,34 +94,6 @@ mod tests {
         );
     }
 
-    /// Stands in for a Keychain with no Claude entry.
-    fn no_keychain_entry(_now_ms: i64) -> Result<ClaudeCredential, CredentialError> {
-        Err(CredentialError::ClaudeMissing(
-            "/nowhere/.credentials.json".to_string(),
-        ))
-    }
-
-    #[tokio::test]
-    async fn a_missing_claude_credential_is_reported_rather_than_hanging() {
-        // Neither the Keychain nor the CLI can produce one.
-        let error = resolve_claude_credential(
-            no_keychain_entry,
-            &runner(Reply::fails(44, "SecKeychainSearchCopyNext: not found")),
-            "/usr/bin/security",
-            0,
-        )
-        .await
-        .expect_err("no credential");
-
-        assert!(
-            matches!(
-                error,
-                UsageError::Credential(CredentialError::ClaudeKeychainBlocked)
-            ),
-            "{error}"
-        );
-    }
-
     #[tokio::test]
     async fn a_missing_codex_credential_names_the_path() {
         let client = HttpClient::new().expect("client");
@@ -221,48 +103,6 @@ mod tests {
         assert!(
             error.to_string().contains("/nonexistent/codex-auth.json"),
             "{error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_security_cli_recovers_the_credential_when_the_framework_is_blocked() {
-        let credential = resolve_claude_credential(
-            no_keychain_entry,
-            &runner(Reply::ok(CLAUDE_PAYLOAD)),
-            "/usr/bin/security",
-            0,
-        )
-        .await
-        .expect("recovered through the CLI");
-
-        assert_eq!(credential.access_token.expose(), "tok");
-    }
-
-    #[tokio::test]
-    async fn an_expired_token_is_reported_rather_than_retried_through_the_cli() {
-        fn expired(_now_ms: i64) -> Result<ClaudeCredential, CredentialError> {
-            Err(CredentialError::ClaudeExpired)
-        }
-
-        let fake = Arc::new(FakeCommandRunner::new());
-        fake.fallback(Reply::fails(1, "should not be called"));
-        let runner = Arc::clone(&fake) as Arc<dyn CommandRunner>;
-
-        let error = resolve_claude_credential(expired, &runner, "/usr/bin/security", 0)
-            .await
-            .expect_err("expired");
-
-        assert!(
-            matches!(
-                error,
-                UsageError::Credential(CredentialError::ClaudeExpired)
-            ),
-            "{error}"
-        );
-        assert_eq!(
-            fake.call_count(),
-            0,
-            "an expired token is a real answer; the CLI cannot improve on it"
         );
     }
 

@@ -60,11 +60,10 @@ restore() {
 info "Installing binaries into $PREFIX/bin"
 for binary in streamdeckd streamdeckctl streamdeck-alert; do
   install -m 755 "$REPO/target/release/$binary" "$PREFIX/bin/$binary.new"
-  # An ad-hoc signature gives the binary a stable identity, so the Claude Code
-  # Keychain grant survives rebuilds instead of prompting again every time.
+  # An ad-hoc signature gives the installed executable a stable macOS identity.
   codesign --force --sign - --identifier "io.github.jimmystridh.$binary" \
     "$PREFIX/bin/$binary.new" > /dev/null 2>&1 ||
-    print -u2 "    warning: could not codesign $binary; the Keychain may re-prompt"
+    print -u2 "    warning: could not codesign $binary"
   mv -f "$PREFIX/bin/$binary.new" "$PREFIX/bin/$binary"
 done
 

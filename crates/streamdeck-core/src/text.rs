@@ -36,11 +36,13 @@ pub fn compact_device_label(value: &str, max_chars: usize) -> String {
     ellipsize(alias, max_chars)
 }
 
-/// The four-way device family shown on the Mixer summary tile.
+/// The device family shown on the Mixer summary tile.
 pub fn device_family(value: &str) -> &'static str {
     let lower = value.to_lowercase();
     if lower.contains("macbook") {
         "MAC"
+    } else if lower.contains("airpods") {
+        "AIRPODS"
     } else if lower.contains("bose") {
         "BOSE"
     } else if lower.contains("røde") || lower.contains("rode") {
@@ -218,6 +220,7 @@ mod tests {
         assert_eq!(device_family("Bose NC 700 Headphones"), "BOSE");
         assert_eq!(device_family("RØDE NT-USB"), "RØDE");
         assert_eq!(device_family("Generic USB Audio"), "USB");
+        assert_eq!(device_family("Jimmy’s AirPods - Find My"), "AIRPODS");
         assert_eq!(device_family("Studio Display Speakers"), "OTHER");
     }
 

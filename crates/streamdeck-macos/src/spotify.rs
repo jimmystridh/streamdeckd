@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use streamdeck_core::config::ToolsConfig;
+use streamdeck_core::config::{is_spotify_playlist_uri, ToolsConfig};
 use streamdeck_core::integrations::spotify::{self, RepeatMode, SpotifyStatus};
 
 use crate::command::CommandRunner;
@@ -23,6 +23,8 @@ pub enum SpotifyError {
     NotRunning,
     #[error("macOS denied automation access to Spotify; grant it in Privacy & Security")]
     PermissionDenied,
+    #[error("refused an invalid Spotify playlist URI")]
+    InvalidPlaylist,
 }
 
 /// Reads the whole player state as one tab-separated line. Field order matches
@@ -59,13 +61,14 @@ end if
 "#;
 
 /// The player controls the Spotify page exposes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Control {
     PlayPause,
     Next,
     Previous,
-    ToggleShuffle,
-    ToggleRepeat,
+    /// Relative movement in seconds.
+    Seek(i32),
+    PlayPlaylist(String),
     /// Absolute volume, already clamped.
     SetVolume(u8),
 }
@@ -130,11 +133,22 @@ impl SpotifyAdapter for AppleScriptSpotifyAdapter {
             Control::PlayPause => "tell application \"Spotify\" to playpause".to_string(),
             Control::Next => "tell application \"Spotify\" to next track".to_string(),
             Control::Previous => "tell application \"Spotify\" to previous track".to_string(),
-            Control::ToggleShuffle => {
-                "tell application \"Spotify\" to set shuffling to not shuffling".to_string()
-            }
-            Control::ToggleRepeat => {
-                "tell application \"Spotify\" to set repeating to not repeating".to_string()
+            Control::Seek(delta) => format!(
+                "tell application \"Spotify\"\n\
+                 set nextPosition to (player position) + ({delta})\n\
+                 if nextPosition < 0 then set nextPosition to 0\n\
+                 try\n\
+                 set trackDuration to (duration of current track) / 1000\n\
+                 if nextPosition > trackDuration then set nextPosition to trackDuration\n\
+                 end try\n\
+                 set player position to nextPosition\n\
+                 end tell"
+            ),
+            Control::PlayPlaylist(uri) => {
+                if !is_spotify_playlist_uri(&uri) {
+                    return Err(SpotifyError::InvalidPlaylist);
+                }
+                format!("tell application \"Spotify\" to play track \"{uri}\"")
             }
             Control::SetVolume(volume) => format!(
                 "tell application \"Spotify\" to set sound volume to {}",
@@ -211,12 +225,18 @@ mod tests {
 
     #[tokio::test]
     async fn every_control_sends_exactly_one_guarded_script() {
-        let cases = [
+        let cases = vec![
             (Control::PlayPause, "playpause"),
             (Control::Next, "next track"),
             (Control::Previous, "previous track"),
-            (Control::ToggleShuffle, "set shuffling to not shuffling"),
-            (Control::ToggleRepeat, "set repeating to not repeating"),
+            (
+                Control::Seek(-15),
+                "set nextPosition to (player position) + (-15)",
+            ),
+            (
+                Control::PlayPlaylist("spotify:playlist:1jnizfcJFNGVeJgmp7ngK9".to_string()),
+                "play track \"spotify:playlist:1jnizfcJFNGVeJgmp7ngK9\"",
+            ),
             (Control::SetVolume(65), "set sound volume to 65"),
         ];
 
@@ -224,7 +244,7 @@ mod tests {
             let runner = Arc::new(FakeCommandRunner::new());
             runner.fallback(Reply::ok(""));
             adapter(Arc::clone(&runner))
-                .control(control)
+                .control(control.clone())
                 .await
                 .expect("control");
 
@@ -249,6 +269,35 @@ mod tests {
             .await
             .expect("control");
         assert!(runner.called_with("set sound volume to 100"));
+    }
+
+    #[tokio::test]
+    async fn seeking_clamps_to_the_track_bounds() {
+        let runner = Arc::new(FakeCommandRunner::new());
+        runner.fallback(Reply::ok(""));
+        adapter(Arc::clone(&runner))
+            .control(Control::Seek(15))
+            .await
+            .expect("control");
+
+        assert!(runner.called_with("if nextPosition < 0 then set nextPosition to 0"));
+        assert!(runner.called_with("(duration of current track) / 1000"));
+        assert!(runner
+            .called_with("if nextPosition > trackDuration then set nextPosition to trackDuration"));
+    }
+
+    #[tokio::test]
+    async fn playlist_uris_are_validated_before_applescript() {
+        let runner = Arc::new(FakeCommandRunner::new());
+        let error = adapter(Arc::clone(&runner))
+            .control(Control::PlayPlaylist(
+                "spotify:playlist:bad\" & do shell script \"oops".to_string(),
+            ))
+            .await
+            .expect_err("unsafe URI rejected");
+
+        assert!(matches!(error, SpotifyError::InvalidPlaylist));
+        assert_eq!(runner.call_count(), 0);
     }
 
     #[tokio::test]
