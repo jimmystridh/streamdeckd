@@ -1,0 +1,1 @@
+create remote repo public in jimmystridh, make sure we have no secrets in the repo, then push
