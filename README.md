@@ -11,7 +11,7 @@ integration logic itself.
 |---|---:|---:|
 | Elgato Stream Deck with the Command Center profile | ~1,232 MB | 13 |
 | OpenDeck with copied plugins | ~501 MB | 7 |
-| `streamdeckd` | target ≤80 MiB | 1 |
+| `streamdeckd` | ~18 MiB observed idle | 1 |
 
 It deliberately does *not* implement the Stream Deck plugin SDK, load
 `.sdPlugin` bundles, or ship a graphical profile editor. Those are what make the
