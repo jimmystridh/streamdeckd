@@ -1,0 +1,56 @@
+# AGENTS.md instructions
+
+<INSTRUCTIONS>
+- **Current date**: 2026-07-26
+
+# User-Wide Preferences
+
+## Tools
+
+- Use `ag` for searching text in files.
+- Use `fd` for finding files by name or path.
+- Prefer checking actual state with shell commands over guessing.
+- Use `gh` for GitHub work when appropriate.
+- Use `azping` to check Azure login before Azure work; ask the user to log in if needed.
+- For Python projects or scripts, use `uv` for dependency management.
+
+## Style
+
+- Prefer self-documenting code over comments.
+
+## Git & Repository Operations
+
+- Confirm before creating repos, merging codebases, or making destructive or structural git changes.
+- Never create GitHub repositories or push without explicit approval.
+- Verify the correct base branch before comparing or rebasing; do not assume `main` or `master`.
+- Never commit unless explicitly instructed.
+- Do not push unless explicitly instructed.
+- Use conventional commits when asked to commit.
+- Keep commits atomic.
+
+## Testing
+
+- After code changes, run relevant tests or checks before reporting completion.
+- Before committing, run the appropriate test suite; fix failures when feasible.
+- Watch for environment variables, localhost IPv6 issues, E2E selector mismatches, and parallel test worker conflicts.
+
+## Visual Generation
+
+- For slides, images, diagrams, and documents, render the literal requested content, especially exact text, tables, and data.
+
+## Services
+
+- Datadog uses the EU data center: `datadoghq.eu`.
+
+## Polling
+
+- When polling command status, sleep a reasonable interval between checks, usually 10 to 60 seconds or longer for long-running jobs.
+</INSTRUCTIONS>
+
+<environment_context>
+  <cwd>/Users/js/code/jimmy/streamdeckd</cwd>
+  <shell>zsh</shell>
+  <current_date>2026-07-26</current_date>
+  <timezone>Europe/Stockholm</timezone>
+  <filesystem><workspace_roots><root>/Users/js/code/jimmy/streamdeckd</root></workspace_roots><permission_profile type="disabled"><file_system type="unrestricted" /></permission_profile></filesystem>
+</environment_context>
