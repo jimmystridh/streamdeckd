@@ -11,10 +11,12 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use harness::Harness;
+use streamdeck_core::integrations::application::{ApplicationInfo, CustomApplicationAction};
 use streamdeck_core::model::{KeyPosition, PageId};
 use streamdeck_core::pomodoro::{self, Phase, PomodoroState, Status};
 use streamdeck_core::state::PersistentState;
-use streamdeck_macos::fake::WisprInvocation;
+use streamdeck_macos::application::ApplicationControl;
+use streamdeck_macos::fake::{ApplicationInvocation, WisprInvocation};
 use streamdeckd::device::recording::Sent;
 use streamdeckd::device::DeviceError;
 use streamdeckd::runtime::RuntimeEvent;
@@ -36,6 +38,52 @@ async fn starting_paints_every_key_once() {
         .sent()
         .iter()
         .any(|entry| matches!(entry, Sent::Brightness(60))));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn home_opens_dashboard_and_quick_capture_targets_both_obsidian_vaults() {
+    let mut harness = Harness::new(PageId::Home).await;
+
+    harness.commands.reset();
+    harness.press(2, 2).await;
+    assert!(harness
+        .commands
+        .called_with("obsidian://new?vault=JS%2DAgent&file=Inbox%2F"));
+
+    harness.commands.reset();
+    harness.hold(2, 2).await;
+    assert!(harness
+        .commands
+        .called_with("obsidian://new?vault=JS%2DVisma%2DAgent&file=Inbox%2F"));
+
+    harness.press(2, 1).await;
+    assert_eq!(harness.page(), PageId::Dashboard);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn ambient_light_changes_brightness_without_redundant_usb_writes() {
+    let mut harness = Harness::new(PageId::Home).await;
+    harness.device.reset();
+
+    harness
+        .events
+        .send(RuntimeEvent::AmbientLight(0.0))
+        .expect("sent");
+    harness.settle().await;
+    assert_eq!(harness.device.sent(), vec![Sent::Brightness(15)]);
+
+    harness.device.reset();
+    for lux in [0.0, 0.1, 0.0, 0.2] {
+        harness
+            .events
+            .send(RuntimeEvent::AmbientLight(lux))
+            .expect("sent");
+    }
+    harness.settle().await;
+    assert!(
+        harness.device.sent().is_empty(),
+        "stable ambient light must not produce USB writes"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -196,8 +244,12 @@ async fn pressed_feedback_writes_the_key_down_and_back_up_again() {
 async fn a_short_press_navigates_and_a_long_press_opens_the_other_page() {
     let mut harness = Harness::new(PageId::Home).await;
 
-    // 2,2 is the GitHub summary: a short press navigates.
-    harness.press(2, 2).await;
+    // 2,1 is the second-dashboard link, where GitHub now lives.
+    harness.press(2, 1).await;
+    assert_eq!(harness.page(), PageId::Dashboard);
+
+    // 1,2 is the GitHub summary: a short press navigates.
+    harness.press(1, 2).await;
     assert_eq!(harness.page(), PageId::GitHub);
 
     // 1,1 on GitHub is Home.
@@ -233,6 +285,58 @@ async fn the_media_key_plays_on_tap_and_opens_controls_on_hold() {
 
     harness.hold(3, 3).await;
     assert_eq!(harness.page(), PageId::Media);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn current_application_opens_context_controls_and_dispatches_custom_actions() {
+    let mut harness = Harness::new(PageId::Home).await;
+
+    harness.press(3, 1).await;
+    assert_eq!(harness.page(), PageId::Application);
+
+    harness.press(1, 3).await;
+    assert_eq!(
+        harness.application.calls(),
+        vec![ApplicationInvocation {
+            application: ApplicationInfo {
+                name: "Finder".to_string(),
+                bundle_id: Some("com.apple.finder".to_string()),
+                pid: 42,
+            },
+            control: ApplicationControl::Hide,
+        }]
+    );
+
+    harness.press(2, 1).await;
+    assert_eq!(
+        harness.application.custom_calls(),
+        vec![(
+            ApplicationInfo {
+                name: "Finder".to_string(),
+                bundle_id: Some("com.apple.finder".to_string()),
+                pid: 42,
+            },
+            CustomApplicationAction::FinderNewWindow,
+        )]
+    );
+
+    let wispr = ApplicationInfo {
+        name: "Wispr Flow".to_string(),
+        bundle_id: Some("com.electron.wispr-flow".to_string()),
+        pid: 84,
+    };
+    harness.application.set_current(wispr.clone());
+    harness
+        .runtime
+        .state_mut()
+        .feeds
+        .application
+        .store(wispr, 0);
+    harness.press(2, 2).await;
+    assert_eq!(
+        harness.wispr.calls(),
+        vec![WisprInvocation::Microphone("Built-in mic".to_string())]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -703,11 +807,12 @@ async fn a_disconnect_stops_rendering_and_a_reconnect_repaints_everything() {
     );
 
     harness
-        .runtime
-        .attach_device(Arc::clone(&harness.device) as Arc<dyn streamdeckd::device::DeckDevice>);
-    harness
         .events
-        .send(RuntimeEvent::DeviceReconnected)
+        .send(RuntimeEvent::DeviceReconnected(
+            streamdeckd::runtime::ReconnectedDevice(
+                Arc::clone(&harness.device) as Arc<dyn streamdeckd::device::DeckDevice>
+            ),
+        ))
         .expect("sent");
     harness.settle().await;
 
@@ -776,8 +881,10 @@ async fn every_page_can_be_reached_and_rendered_from_home() {
     let mut harness = Harness::new(PageId::Home).await;
 
     for (page, presses) in [
-        (PageId::Mixer, vec![(3u8, 1u8)]),
-        (PageId::GitHub, vec![(2, 2)]),
+        (PageId::Application, vec![(3u8, 1u8)]),
+        (PageId::Mixer, vec![(3u8, 4u8)]),
+        (PageId::Dashboard, vec![(2, 1)]),
+        (PageId::GitHub, vec![(2, 1), (1, 2)]),
         (PageId::Weather, vec![(3, 5)]),
         (PageId::Stensjon, vec![(3, 5), (3, 1)]),
     ] {
@@ -807,7 +914,8 @@ async fn every_page_can_be_reached_and_rendered_from_home() {
 #[tokio::test(flavor = "multi_thread")]
 async fn navigation_persists_the_page_so_a_restart_returns_to_it() {
     let mut first = Harness::new(PageId::Home).await;
-    first.press(2, 2).await;
+    first.press(2, 1).await;
+    first.press(1, 2).await;
     assert_eq!(first.page(), PageId::GitHub);
     let persisted = first.store.load(PomodoroState::default()).expect("loaded");
     drop(first);

@@ -29,9 +29,14 @@ pub const GITHUB_ACTIVE: Color = Color::hex(0x7c3aed);
 pub const GITHUB_ITEM: Color = Color::hex(0x5b21b6);
 pub const SPOTIFY: Color = Color::hex(0x1db954);
 pub const MEDIA: Color = Color::hex(0x4338ca);
+pub const APPLICATION: Color = Color::hex(0x0369a1);
 pub const WISPR: Color = Color::hex(0x6d28d9);
 pub const CLAUDE: Color = Color::hex(0xb45309);
 pub const CODEX: Color = Color::hex(0x0f172a);
+pub const QUICK_CAPTURE: Color = Color::hex(0x7c3aed);
+pub const MAC_HEALTH: Color = Color::hex(0x0f766e);
+pub const NETWORK: Color = Color::hex(0x0369a1);
+pub const VASTTRAFIK: Color = Color::hex(0x005a9c);
 
 pub const FOCUS: Color = Color::hex(0xbe123c);
 pub const SHORT_BREAK: Color = Color::hex(0x0f766e);

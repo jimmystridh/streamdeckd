@@ -7,21 +7,29 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
+use streamdeck_core::integrations::application::{
+    ApplicationInfo, ContextAction, CustomApplicationAction,
+};
 use streamdeck_core::integrations::audio::AudioSnapshot;
+use streamdeck_core::integrations::ci::CiSnapshot;
 use streamdeck_core::integrations::claude::ClaudeUsage;
 use streamdeck_core::integrations::codex::CodexUsage;
+use streamdeck_core::integrations::departures::DepartureBoard;
 use streamdeck_core::integrations::github::{GitHubSnapshot, MetricKind};
 use streamdeck_core::integrations::lake::{LakeHistory, LakeReading};
 use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::SpotifyStatus;
+use streamdeck_core::integrations::system::{MacHealth, NetworkStatus};
 use streamdeck_core::integrations::weather::WeatherSnapshot;
 use streamdeck_core::model::{AudioKind, IntegrationId, PageId};
 use streamdeck_core::pages::{
-    Action, AudioCommand, MediaCommand, PomodoroCommand, SpotifyCommand, WisprCommand,
+    Action, ApplicationCommand, AudioCommand, CaptureDestination, DashboardCommand, MediaCommand,
+    PomodoroCommand, SpotifyCommand, WisprCommand,
 };
 use streamdeck_core::pomodoro;
 use streamdeck_core::state::Durability;
+use streamdeck_macos::application::ApplicationControl;
 use streamdeck_macos::media::Control as MediaControl;
 use streamdeck_macos::spotify::Control;
 use tokio::sync::mpsc;
@@ -50,14 +58,32 @@ pub struct Effects {
 /// Work that has to leave the coordinator's thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Task {
-    SelectAudio { kind: AudioKind, index: usize },
-    AdjustVolume { kind: AudioKind, delta: i32 },
+    SelectAudio {
+        kind: AudioKind,
+        index: usize,
+    },
+    AdjustVolume {
+        kind: AudioKind,
+        delta: i32,
+    },
     ToggleMute(AudioKind),
     Spotify(SpotifyCommand),
     Media(MediaCommand),
+    Application {
+        application: ApplicationInfo,
+        control: ApplicationControl,
+    },
+    CustomApplication {
+        application: ApplicationInfo,
+        action: CustomApplicationAction,
+    },
     SetWisprHandsFree(bool),
     SelectWisprMicrophone(usize),
     OpenMeeting(usize),
+    QuickCapture(CaptureDestination),
+    OpenActivityMonitor,
+    OpenVpn,
+    OpenNetworkSettings,
     OpenUrl(String),
 }
 
@@ -80,10 +106,15 @@ pub enum RefreshResult {
     LakeCurrent(Result<LakeReading, String>),
     LakeHistory(Result<LakeHistory, String>),
     GitHub(Result<GitHubSnapshot, String>),
+    Ci(Result<CiSnapshot, String>),
+    MacHealth(Result<MacHealth, String>),
+    Network(Result<NetworkStatus, String>),
+    Departures(Result<DepartureBoard, String>),
     Claude(Result<ClaudeUsage, String>),
     Codex(Result<CodexUsage, String>),
     Spotify(Result<SpotifyStatus, String>),
     Media(Result<MediaStatus, String>),
+    Application(Result<ApplicationInfo, String>),
 }
 
 /// Applies an action to the runtime's own state and reports what else must happen.
@@ -115,6 +146,38 @@ pub fn apply(state: &mut RuntimeState, action: Action, now: DateTime<Utc>, now_m
         }
         Action::Spotify(command) => effects.spawn.push(Task::Spotify(command)),
         Action::Media(command) => effects.spawn.push(Task::Media(command)),
+        Action::Application(command) => apply_application(state, command, &mut effects),
+        Action::Dashboard(command) => match command {
+            DashboardCommand::QuickCapture(destination) => {
+                effects.spawn.push(Task::QuickCapture(destination));
+            }
+            DashboardCommand::OpenCiRun => {
+                if let Some(url) = state
+                    .feeds
+                    .ci
+                    .peek()
+                    .and_then(|snapshot| snapshot.actionable())
+                    .map(|run| run.url.clone())
+                {
+                    effects.spawn.push(Task::OpenUrl(url));
+                }
+            }
+            DashboardCommand::OpenDepartureBoard(index) => {
+                if let Some(stop) = state.config.vasttrafik.stops.get(index) {
+                    effects.spawn.push(Task::OpenUrl(format!(
+                        "https://avgangstavla.vasttrafik.se/?source=streamdeckd&board1Gids={}&board1Modules=departures&board1Modules=trafficSituations",
+                        stop.gid
+                    )));
+                }
+            }
+            DashboardCommand::OpenActivityMonitor => {
+                effects.spawn.push(Task::OpenActivityMonitor);
+            }
+            DashboardCommand::OpenVpn => effects.spawn.push(Task::OpenVpn),
+            DashboardCommand::OpenNetworkSettings => {
+                effects.spawn.push(Task::OpenNetworkSettings);
+            }
+        },
         Action::Wispr(command) => match command {
             WisprCommand::ToggleHandsFree => {
                 state.wispr_hands_free = !state.wispr_hands_free;
@@ -157,6 +220,83 @@ pub fn apply(state: &mut RuntimeState, action: Action, now: DateTime<Utc>, now_m
         }
     }
     effects
+}
+
+fn apply_application(state: &mut RuntimeState, command: ApplicationCommand, effects: &mut Effects) {
+    let Some(application) = state.feeds.application.peek().cloned() else {
+        return;
+    };
+
+    match command {
+        ApplicationCommand::Activate => effects.spawn.push(Task::Application {
+            application,
+            control: ApplicationControl::Activate,
+        }),
+        ApplicationCommand::Hide => effects.spawn.push(Task::Application {
+            application,
+            control: ApplicationControl::Hide,
+        }),
+        ApplicationCommand::Quit => effects.spawn.push(Task::Application {
+            application,
+            control: ApplicationControl::Quit,
+        }),
+        ApplicationCommand::ForceQuit => effects.spawn.push(Task::Application {
+            application,
+            control: ApplicationControl::ForceQuit,
+        }),
+        ApplicationCommand::Context(slot) => {
+            apply_context_action(state, application.context_action(slot), effects);
+        }
+        ApplicationCommand::Recent(index) => {
+            if let Some(recent) = state.recent_application(index).cloned() {
+                effects.spawn.push(Task::Application {
+                    application: recent,
+                    control: ApplicationControl::Activate,
+                });
+            }
+        }
+    }
+}
+
+fn apply_context_action(state: &mut RuntimeState, action: ContextAction, effects: &mut Effects) {
+    match action {
+        ContextAction::None => {}
+        ContextAction::SpotifyPrevious => {
+            effects.spawn.push(Task::Spotify(SpotifyCommand::Previous));
+        }
+        ContextAction::SpotifyPlayPause => {
+            effects.spawn.push(Task::Spotify(SpotifyCommand::PlayPause));
+        }
+        ContextAction::SpotifyNext => {
+            effects.spawn.push(Task::Spotify(SpotifyCommand::Next));
+        }
+        ContextAction::SpotifySeek(delta) => {
+            effects
+                .spawn
+                .push(Task::Spotify(SpotifyCommand::Seek(delta)));
+        }
+        ContextAction::WisprToggle => {
+            state.wispr_hands_free = !state.wispr_hands_free;
+            effects
+                .spawn
+                .push(Task::SetWisprHandsFree(state.wispr_hands_free));
+        }
+        ContextAction::WisprMicrophone(index) => {
+            effects.spawn.push(Task::SelectWisprMicrophone(index));
+        }
+        ContextAction::OpenMeeting(index) => effects.spawn.push(Task::OpenMeeting(index)),
+        ContextAction::Navigate(page) => {
+            effects.page_changed = state.navigator.go_to(page);
+        }
+        ContextAction::Custom(action) => {
+            if let Some(application) = state.feeds.application.peek().cloned() {
+                effects.spawn.push(Task::CustomApplication {
+                    application,
+                    action,
+                });
+            }
+        }
+    }
 }
 
 fn apply_pomodoro(
@@ -212,6 +352,7 @@ pub fn spawn(
     events: mpsc::UnboundedSender<RuntimeEvent>,
 ) {
     let audio = Arc::clone(&services.audio);
+    let application_service = Arc::clone(&services.application);
     let spotify = Arc::clone(&services.spotify);
     let media = Arc::clone(&services.media);
     let wispr = Arc::clone(&services.wispr);
@@ -230,6 +371,9 @@ pub fn spawn(
         .unwrap_or(50);
     let spotify_playlists = state.config.spotify.playlists.clone();
     let wispr_microphones = state.config.wispr.microphones.clone();
+    let quick_capture = state.config.quick_capture.clone();
+    let network = state.config.network.clone();
+    let timezone = state.timezone;
 
     tokio::spawn(async move {
         let mut outcome = ActionOutcome::default();
@@ -314,6 +458,24 @@ pub fn spawn(
                 }
                 outcome.invalidate.push(IntegrationId::MediaSession);
             }
+            Task::Application {
+                application,
+                control,
+            } => {
+                if let Err(error) = application_service.control(&application, control).await {
+                    outcome.error = Some(error.to_string());
+                }
+                outcome.invalidate.push(IntegrationId::FrontmostApplication);
+            }
+            Task::CustomApplication {
+                application,
+                action,
+            } => {
+                if let Err(error) = application_service.custom(&application, action).await {
+                    outcome.error = Some(error.to_string());
+                }
+                outcome.invalidate.push(IntegrationId::FrontmostApplication);
+            }
             Task::SetWisprHandsFree(enabled) => {
                 if let Err(error) = wispr.set_hands_free(enabled).await {
                     outcome.error = Some(error.to_string());
@@ -347,8 +509,72 @@ pub fn spawn(
                 }
                 None => outcome.error = Some(format!("no meeting at position {index}")),
             },
+            Task::QuickCapture(destination) => {
+                let vault = match destination {
+                    CaptureDestination::Personal => &quick_capture.personal_vault,
+                    CaptureDestination::Work => &quick_capture.work_vault,
+                };
+                let timestamp = Utc::now()
+                    .with_timezone(&timezone)
+                    .format("%Y-%m-%d %H-%M-%S Quick Capture")
+                    .to_string();
+                let file = format!("{}/{}", quick_capture.folder, timestamp);
+                let encode = |value: &str| {
+                    percent_encoding::utf8_percent_encode(value, percent_encoding::NON_ALPHANUMERIC)
+                        .to_string()
+                };
+                let uri = format!(
+                    "obsidian://new?vault={}&file={}",
+                    encode(vault),
+                    encode(&file)
+                );
+                if let Err(error) = runner
+                    .run(&open, &[&uri], streamdeck_macos::timeouts::LOCAL)
+                    .await
+                {
+                    outcome.error = Some(error.to_string());
+                }
+            }
+            Task::OpenActivityMonitor => {
+                if let Err(error) = runner
+                    .run(
+                        &open,
+                        &["-a", "Activity Monitor"],
+                        streamdeck_macos::timeouts::LOCAL,
+                    )
+                    .await
+                {
+                    outcome.error = Some(error.to_string());
+                }
+            }
+            Task::OpenVpn => {
+                if let Err(error) = runner
+                    .run(
+                        &open,
+                        &["-a", &network.vpn_application],
+                        streamdeck_macos::timeouts::LOCAL,
+                    )
+                    .await
+                {
+                    outcome.error = Some(error.to_string());
+                }
+            }
+            Task::OpenNetworkSettings => {
+                if let Err(error) = runner
+                    .run(
+                        &open,
+                        &["x-apple.systempreferences:com.apple.Network-Settings.extension"],
+                        streamdeck_macos::timeouts::LOCAL,
+                    )
+                    .await
+                {
+                    outcome.error = Some(error.to_string());
+                }
+            }
             Task::OpenUrl(url) => {
-                if url.starts_with("https://github.com/") {
+                if url.starts_with("https://github.com/")
+                    || url.starts_with("https://avgangstavla.vasttrafik.se/")
+                {
                     if let Err(error) = runner
                         .run(&open, &[&url], streamdeck_macos::timeouts::LOCAL)
                         .await
@@ -375,11 +601,13 @@ pub fn spawn_refresh(
     let http = services.http.clone();
     let runner = Arc::clone(&services.runner);
     let audio = Arc::clone(&services.audio);
+    let application = Arc::clone(&services.application);
     let spotify = Arc::clone(&services.spotify);
     let media = Arc::clone(&services.media);
     let config = Arc::clone(&state.config);
     let timezone = state.timezone;
     let last_modified = state.feeds.weather_last_modified.clone();
+    let vasttrafik = services.vasttrafik.clone();
 
     tokio::spawn(async move {
         let now = Utc::now();
@@ -430,6 +658,38 @@ pub fn spawn_refresh(
                     .await
                     .map_err(|error| error.to_string()),
             ),
+            IntegrationId::CiRadar => RefreshResult::Ci(
+                services::ci::fetch(&runner, &config.tools.gh, &config.ci)
+                    .await
+                    .map(|result| {
+                        for (repository, error) in result.failures {
+                            tracing::warn!(
+                                component = "ci-radar",
+                                repository = %repository,
+                                error = %error,
+                                "one CI repository failed"
+                            );
+                        }
+                        result.snapshot
+                    })
+                    .map_err(|error| error.to_string()),
+            ),
+            IntegrationId::MacHealth => RefreshResult::MacHealth(
+                services::system::health(&runner)
+                    .await
+                    .map_err(|error| error.to_string()),
+            ),
+            IntegrationId::NetworkStatus => RefreshResult::Network(
+                services::system::network(&runner, &config.network.vpn_name)
+                    .await
+                    .map_err(|error| error.to_string()),
+            ),
+            IntegrationId::Departures => RefreshResult::Departures(
+                vasttrafik
+                    .fetch(&config.vasttrafik, now)
+                    .await
+                    .map_err(|error| error.to_string()),
+            ),
             IntegrationId::ClaudeUsage => RefreshResult::Claude(
                 services::usage::fetch_claude(&http, now.timestamp_millis())
                     .await
@@ -446,6 +706,12 @@ pub fn spawn_refresh(
             IntegrationId::MediaSession => {
                 RefreshResult::Media(media.status().await.map_err(|error| error.to_string()))
             }
+            IntegrationId::FrontmostApplication => RefreshResult::Application(
+                application
+                    .frontmost()
+                    .await
+                    .map_err(|error| error.to_string()),
+            ),
         };
         let _ = events.send(RuntimeEvent::Refreshed(id, result));
     });
@@ -514,10 +780,28 @@ pub fn store_refresh(
         RefreshResult::LakeCurrent(result) => store!(state.feeds.lake_current, result),
         RefreshResult::LakeHistory(result) => store!(state.feeds.lake_history, result),
         RefreshResult::GitHub(result) => store!(state.feeds.github, result),
+        RefreshResult::Ci(result) => store!(state.feeds.ci, result),
+        RefreshResult::MacHealth(result) => store!(state.feeds.mac_health, result),
+        RefreshResult::Network(result) => store!(state.feeds.network, result),
+        RefreshResult::Departures(result) => store!(state.feeds.departures, result),
         RefreshResult::Claude(result) => store!(state.feeds.claude, result),
         RefreshResult::Codex(result) => store!(state.feeds.codex, result),
         RefreshResult::Spotify(result) => store!(state.feeds.spotify, result),
         RefreshResult::Media(result) => store!(state.feeds.media, result),
+        RefreshResult::Application(result) => match result {
+            Ok(application) => {
+                state.record_frontmost_application(&application);
+                state.feeds.application.store(application, now_ms);
+                metrics.record_success(id, 0);
+                true
+            }
+            Err(error) => {
+                state.feeds.application.fail(error.clone(), now_ms);
+                let stale = state.feeds.application.is_stale();
+                metrics.record_failure(id, error, stale);
+                false
+            }
+        },
     }
 }
 
@@ -720,6 +1004,39 @@ mod tests {
     }
 
     #[test]
+    fn application_controls_target_the_snapshotted_process_and_use_custom_context() {
+        let mut state = state();
+        let application = ApplicationInfo {
+            name: "Spotify".to_string(),
+            bundle_id: Some("com.spotify.client".to_string()),
+            pid: 123,
+        };
+        state.feeds.application.store(application.clone(), 0);
+
+        let hide = apply(
+            &mut state,
+            Action::Application(ApplicationCommand::Hide),
+            now(),
+            1_000,
+        );
+        assert_eq!(
+            hide.spawn,
+            vec![Task::Application {
+                application,
+                control: ApplicationControl::Hide,
+            }]
+        );
+
+        let seek = apply(
+            &mut state,
+            Action::Application(ApplicationCommand::Context(3)),
+            now(),
+            1_000,
+        );
+        assert_eq!(seek.spawn, vec![Task::Spotify(SpotifyCommand::Seek(-15))]);
+    }
+
+    #[test]
     fn wispr_tap_toggles_hands_free_and_microphone_selection_returns_home() {
         let mut state = state();
 
@@ -874,6 +1191,49 @@ mod tests {
             effects.invalidate,
             vec![IntegrationId::LakeCurrent, IntegrationId::LakeHistory]
         );
+    }
+
+    #[test]
+    fn dashboard_actions_become_scoped_safe_tasks() {
+        let mut state = state();
+
+        let personal = apply(
+            &mut state,
+            Action::Dashboard(DashboardCommand::QuickCapture(CaptureDestination::Personal)),
+            now(),
+            1_000,
+        );
+        assert_eq!(
+            personal.spawn,
+            vec![Task::QuickCapture(CaptureDestination::Personal)]
+        );
+
+        let health = apply(
+            &mut state,
+            Action::Dashboard(DashboardCommand::OpenActivityMonitor),
+            now(),
+            1_000,
+        );
+        assert_eq!(health.spawn, vec![Task::OpenActivityMonitor]);
+
+        let vpn = apply(
+            &mut state,
+            Action::Dashboard(DashboardCommand::OpenVpn),
+            now(),
+            1_000,
+        );
+        assert_eq!(vpn.spawn, vec![Task::OpenVpn]);
+
+        let board = apply(
+            &mut state,
+            Action::Dashboard(DashboardCommand::OpenDepartureBoard(0)),
+            now(),
+            1_000,
+        );
+        assert!(matches!(
+            board.spawn.as_slice(),
+            [Task::OpenUrl(url)] if url == "https://avgangstavla.vasttrafik.se/?source=streamdeckd&board1Gids=9021014002140000&board1Modules=departures&board1Modules=trafficSituations"
+        ));
     }
 
     #[test]

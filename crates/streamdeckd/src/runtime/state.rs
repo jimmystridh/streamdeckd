@@ -13,14 +13,18 @@ use chrono_tz::Tz;
 use streamdeck_core::cache::{CachePolicy, Cached};
 use streamdeck_core::config::Config;
 use streamdeck_core::deadline::{Backoff, DeadlineId, DeadlineQueue};
+use streamdeck_core::integrations::application::ApplicationInfo;
 use streamdeck_core::integrations::audio::{AudioSnapshot, AudioTarget};
+use streamdeck_core::integrations::ci::CiSnapshot;
 use streamdeck_core::integrations::claude::ClaudeUsage;
 use streamdeck_core::integrations::codex::CodexUsage;
+use streamdeck_core::integrations::departures::DepartureBoard;
 use streamdeck_core::integrations::github::GitHubSnapshot;
 use streamdeck_core::integrations::lake::{LakeHistory, LakeReading};
 use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::SpotifyStatus;
+use streamdeck_core::integrations::system::{MacHealth, NetworkStatus};
 use streamdeck_core::integrations::weather::WeatherSnapshot;
 use streamdeck_core::model::{IntegrationId, PageId, WeatherTile};
 use streamdeck_core::nav::Navigator;
@@ -42,10 +46,15 @@ pub struct Feeds {
     pub lake_current: Cached<LakeReading>,
     pub lake_history: Cached<LakeHistory>,
     pub github: Cached<GitHubSnapshot>,
+    pub ci: Cached<CiSnapshot>,
+    pub mac_health: Cached<MacHealth>,
+    pub network: Cached<NetworkStatus>,
+    pub departures: Cached<DepartureBoard>,
     pub claude: Cached<ClaudeUsage>,
     pub codex: Cached<CodexUsage>,
     pub spotify: Cached<SpotifyStatus>,
     pub media: Cached<MediaStatus>,
+    pub application: Cached<ApplicationInfo>,
 }
 
 impl Default for Feeds {
@@ -60,6 +69,10 @@ impl Default for Feeds {
             lake_current: Cached::new(policy(intervals::LAKE_CURRENT)),
             lake_history: Cached::new(policy(intervals::LAKE_HISTORY)),
             github: Cached::new(policy(intervals::GITHUB)),
+            ci: Cached::new(policy(intervals::CI)),
+            mac_health: Cached::new(policy(intervals::MAC_HEALTH)),
+            network: Cached::new(policy(intervals::NETWORK)),
+            departures: Cached::new(policy(intervals::DEPARTURES)),
             claude: Cached::new(policy(intervals::USAGE)),
             codex: Cached::new(policy(intervals::USAGE)),
             // Spotify polls fast but only while visible, and never retries slowly:
@@ -72,6 +85,10 @@ impl Default for Feeds {
             media: Cached::new(CachePolicy::new(
                 millis(intervals::MEDIA_SESSION),
                 millis(intervals::MEDIA_SESSION),
+            )),
+            application: Cached::new(CachePolicy::new(
+                millis(intervals::FRONTMOST_APPLICATION),
+                millis(intervals::FRONTMOST_APPLICATION),
             )),
         }
     }
@@ -89,10 +106,15 @@ impl Feeds {
             IntegrationId::LakeCurrent => self.lake_current.needs_fetch(now_ms),
             IntegrationId::LakeHistory => self.lake_history.needs_fetch(now_ms),
             IntegrationId::GitHub => self.github.needs_fetch(now_ms),
+            IntegrationId::CiRadar => self.ci.needs_fetch(now_ms),
+            IntegrationId::MacHealth => self.mac_health.needs_fetch(now_ms),
+            IntegrationId::NetworkStatus => self.network.needs_fetch(now_ms),
+            IntegrationId::Departures => self.departures.needs_fetch(now_ms),
             IntegrationId::ClaudeUsage => self.claude.needs_fetch(now_ms),
             IntegrationId::CodexUsage => self.codex.needs_fetch(now_ms),
             IntegrationId::Spotify => self.spotify.needs_fetch(now_ms),
             IntegrationId::MediaSession => self.media.needs_fetch(now_ms),
+            IntegrationId::FrontmostApplication => self.application.needs_fetch(now_ms),
         }
     }
 
@@ -107,10 +129,15 @@ impl Feeds {
             IntegrationId::LakeCurrent => self.lake_current.expires_at_ms(),
             IntegrationId::LakeHistory => self.lake_history.expires_at_ms(),
             IntegrationId::GitHub => self.github.expires_at_ms(),
+            IntegrationId::CiRadar => self.ci.expires_at_ms(),
+            IntegrationId::MacHealth => self.mac_health.expires_at_ms(),
+            IntegrationId::NetworkStatus => self.network.expires_at_ms(),
+            IntegrationId::Departures => self.departures.expires_at_ms(),
             IntegrationId::ClaudeUsage => self.claude.expires_at_ms(),
             IntegrationId::CodexUsage => self.codex.expires_at_ms(),
             IntegrationId::Spotify => self.spotify.expires_at_ms(),
             IntegrationId::MediaSession => self.media.expires_at_ms(),
+            IntegrationId::FrontmostApplication => self.application.expires_at_ms(),
         }
     }
 
@@ -123,10 +150,15 @@ impl Feeds {
             IntegrationId::LakeCurrent => self.lake_current.invalidate(),
             IntegrationId::LakeHistory => self.lake_history.invalidate(),
             IntegrationId::GitHub => self.github.invalidate(),
+            IntegrationId::CiRadar => self.ci.invalidate(),
+            IntegrationId::MacHealth => self.mac_health.invalidate(),
+            IntegrationId::NetworkStatus => self.network.invalidate(),
+            IntegrationId::Departures => self.departures.invalidate(),
             IntegrationId::ClaudeUsage => self.claude.invalidate(),
             IntegrationId::CodexUsage => self.codex.invalidate(),
             IntegrationId::Spotify => self.spotify.invalidate(),
             IntegrationId::MediaSession => self.media.invalidate(),
+            IntegrationId::FrontmostApplication => self.application.invalidate(),
         }
     }
 
@@ -163,6 +195,8 @@ pub struct RuntimeState {
     /// second due deadline never starts a duplicate request.
     pub in_flight: HashSet<IntegrationId>,
     pub backoff: HashMap<IntegrationId, Backoff>,
+    /// Most recently frontmost applications, newest first. Kept in memory only.
+    pub application_history: Vec<ApplicationInfo>,
     pub audio_output: Vec<AudioTarget>,
     pub audio_input: Vec<AudioTarget>,
     /// Set while a Pomodoro completion is unacknowledged.
@@ -201,6 +235,7 @@ impl RuntimeState {
             feeds: Feeds::default(),
             in_flight: HashSet::new(),
             backoff: HashMap::new(),
+            application_history: Vec::new(),
             audio_output,
             audio_input,
             alert_flashing: false,
@@ -260,10 +295,16 @@ impl RuntimeState {
             lake_current: Feeds::feed(&self.feeds.lake_current),
             lake_history: Feeds::feed(&self.feeds.lake_history),
             github: Feeds::feed(&self.feeds.github),
+            ci: Feeds::feed(&self.feeds.ci),
+            mac_health: Feeds::feed(&self.feeds.mac_health),
+            network: Feeds::feed(&self.feeds.network),
+            departures: Feeds::feed(&self.feeds.departures),
             claude: Feeds::feed(&self.feeds.claude),
             codex: Feeds::feed(&self.feeds.codex),
             spotify: Feeds::feed(&self.feeds.spotify),
             media: Feeds::feed(&self.feeds.media),
+            application: Feeds::feed(&self.feeds.application),
+            recent_applications: self.recent_applications(),
             weather_detail: self
                 .weather_detail
                 .filter(|(_, until)| now_ms < *until)
@@ -271,6 +312,29 @@ impl RuntimeState {
             panel_seconds_remaining: self.navigator.panel_seconds_remaining(now_ms),
             panel_total_seconds: self.navigator.panel_total_seconds(),
         }
+    }
+
+    pub fn record_frontmost_application(&mut self, application: &ApplicationInfo) {
+        self.application_history
+            .retain(|candidate| !candidate.same_application(application));
+        self.application_history.insert(0, application.clone());
+        self.application_history.truncate(6);
+    }
+
+    pub fn recent_application(&self, index: usize) -> Option<&ApplicationInfo> {
+        let current = self.feeds.application.peek();
+        self.application_history
+            .iter()
+            .filter(|candidate| {
+                !current.is_some_and(|application| candidate.same_application(application))
+            })
+            .nth(index)
+    }
+
+    fn recent_applications(&self) -> Vec<ApplicationInfo> {
+        (0..5)
+            .filter_map(|index| self.recent_application(index).cloned())
+            .collect()
     }
 
     /// The integrations that should be refreshed now: required by the visible
@@ -288,7 +352,12 @@ impl RuntimeState {
     /// process spawn. Entering the Spotify page also refreshes immediately so
     /// the transport controls never open showing ten-second-old state.
     fn apply_spotify_cadence(&mut self) {
-        let on_spotify_page = self.visible_page() == PageId::Spotify;
+        let on_spotify_page = self.visible_page() == PageId::Spotify
+            || (self.visible_page() == PageId::Application
+                && self.feeds.application.peek().is_some_and(|application| {
+                    application.kind()
+                        == streamdeck_core::integrations::application::ApplicationKind::Spotify
+                }));
         let interval = if on_spotify_page {
             intervals::SPOTIFY_PAGE
         } else {
@@ -462,11 +531,47 @@ mod tests {
     }
 
     #[test]
+    fn application_history_is_recent_unique_and_excludes_the_current_app() {
+        let mut state = state();
+        for index in 0..7 {
+            state.record_frontmost_application(&ApplicationInfo {
+                name: format!("App {index}"),
+                bundle_id: Some(format!("test.app.{index}")),
+                pid: index,
+            });
+        }
+        let current = ApplicationInfo {
+            name: "App 6".to_string(),
+            bundle_id: Some("test.app.6".to_string()),
+            pid: 99,
+        };
+        state.record_frontmost_application(&current);
+        state.feeds.application.store(current, 0);
+
+        let recent = state.recent_applications();
+        assert_eq!(recent.len(), 5);
+        assert_eq!(recent[0].name, "App 5");
+        assert_eq!(recent[4].name, "App 1");
+    }
+
+    #[test]
     fn only_the_visible_pages_integrations_are_due() {
         let mut state = state();
         let due = state.due_integrations(1_000);
         assert!(due.contains(&IntegrationId::Weather));
-        assert!(due.contains(&IntegrationId::GitHub));
+        assert!(!due.contains(&IntegrationId::GitHub));
+
+        state.navigator.go_to(PageId::Dashboard);
+        let due = state.due_integrations(1_000);
+        for integration in [
+            IntegrationId::GitHub,
+            IntegrationId::CiRadar,
+            IntegrationId::MacHealth,
+            IntegrationId::NetworkStatus,
+            IntegrationId::Departures,
+        ] {
+            assert!(due.contains(&integration), "{integration} should be due");
+        }
 
         state.navigator.go_to(PageId::Pomodoro);
         assert!(
@@ -487,6 +592,7 @@ mod tests {
     #[test]
     fn an_in_flight_refresh_is_not_started_again() {
         let mut state = state();
+        state.navigator.go_to(PageId::Dashboard);
         state.in_flight.insert(IntegrationId::GitHub);
         assert!(!state
             .due_integrations(1_000)
@@ -496,6 +602,7 @@ mod tests {
     #[test]
     fn a_fresh_cache_entry_is_not_due_again_until_it_expires() {
         let mut state = state();
+        state.navigator.go_to(PageId::Dashboard);
         state.feeds.github.store(GitHubSnapshot::default(), 1_000);
 
         assert!(!state
@@ -509,6 +616,7 @@ mod tests {
     #[test]
     fn invalidating_makes_an_integration_due_immediately() {
         let mut state = state();
+        state.navigator.go_to(PageId::Dashboard);
         state.feeds.github.store(GitHubSnapshot::default(), 1_000);
         state.feeds.invalidate(IntegrationId::GitHub);
 

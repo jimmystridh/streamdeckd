@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
+use streamdeck_core::config::AmbientBrightnessConfig;
 use streamdeck_core::control::{PomodoroAction, Request, Response};
 use streamdeck_core::deadline::DeadlineId;
 use streamdeck_core::model::{IntegrationId, KeyPosition, PageId};
@@ -20,6 +21,7 @@ use streamdeck_core::pages::{self, Action, KeyBinding};
 use streamdeck_core::pomodoro;
 use streamdeck_core::press::PressOutcome;
 use streamdeck_core::state::Durability;
+use streamdeck_macos::application::ApplicationAdapter;
 use streamdeck_macos::audio::AudioAdapter;
 use streamdeck_macos::media::MediaAdapter;
 use streamdeck_macos::meet::MeetLauncher;
@@ -39,12 +41,29 @@ use crate::services::http::HttpClient;
 use actions::{ActionOutcome, Effects};
 use state::RuntimeState;
 
+/// A newly opened HID handle passed from the device supervisor to the runtime.
+///
+/// The wrapper keeps [`RuntimeEvent`] debuggable without requiring the hardware
+/// trait object itself to implement `Debug`.
+pub struct ReconnectedDevice(pub Arc<dyn DeckDevice>);
+
+impl std::fmt::Debug for ReconnectedDevice {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_tuple("ReconnectedDevice")
+            .field(&self.0.descriptor())
+            .finish()
+    }
+}
+
 /// Everything that can wake the coordinator.
 #[derive(Debug)]
 pub enum RuntimeEvent {
     Key(KeyEvent),
     DeviceDisconnected,
-    DeviceReconnected,
+    DeviceReconnected(ReconnectedDevice),
+    /// A native reading from the Mac's ambient-light sensor, in lux.
+    AmbientLight(f64),
     /// A spawned refresh finished.
     Refreshed(IntegrationId, actions::RefreshResult),
     /// A spawned side effect finished.
@@ -69,12 +88,14 @@ pub enum RuntimeEvent {
 pub struct Services {
     pub runner: Arc<dyn CommandRunner>,
     pub audio: Arc<dyn AudioAdapter>,
+    pub application: Arc<dyn ApplicationAdapter>,
     pub spotify: Arc<dyn SpotifyAdapter>,
     pub media: Arc<dyn MediaAdapter>,
     pub wispr: Arc<dyn WisprAdapter>,
     pub notifier: Arc<dyn Notifier>,
     pub meet: Arc<dyn MeetLauncher>,
     pub http: HttpClient,
+    pub vasttrafik: crate::services::vasttrafik::Client,
     /// Path to the alert helper, when installed.
     pub helper_path: Option<std::path::PathBuf>,
 }
@@ -95,6 +116,7 @@ pub struct Runtime {
     /// Track identities with an artwork download already running, so a 2-second
     /// Spotify poll cannot start the same download twice.
     artwork_in_flight: std::collections::HashSet<String>,
+    ambient_brightness: AmbientBrightnessController,
     level: Option<LevelControl>,
     events: mpsc::UnboundedReceiver<RuntimeEvent>,
     sender: mpsc::UnboundedSender<RuntimeEvent>,
@@ -118,6 +140,72 @@ const SLEEP_DETECTION_MS: i64 = 5_000;
 const MAX_TIMED_SLEEP_MS: u64 = 60_000;
 const SCREENSAVER_FRAME_MS: u64 = 50;
 const SCREENSAVER_FADE_IN_MS: u64 = 1_200;
+const AMBIENT_FILTER_NEW_SAMPLE_WEIGHT: f64 = 0.25;
+const AMBIENT_BRIGHTNESS_STEP: f64 = 5.0;
+const AMBIENT_BRIGHTNESS_HYSTERESIS: f64 = 4.0;
+
+#[derive(Debug, Default)]
+struct AmbientBrightnessController {
+    last_lux: Option<f64>,
+    filtered_lux: Option<f64>,
+    applied: Option<u8>,
+}
+
+impl AmbientBrightnessController {
+    fn observe(&mut self, config: &AmbientBrightnessConfig, lux: f64) -> Option<u8> {
+        if !lux.is_finite() || lux < 0.0 {
+            return None;
+        }
+
+        self.last_lux = Some(lux);
+        let filtered = match self.filtered_lux {
+            Some(previous) => {
+                previous * (1.0 - AMBIENT_FILTER_NEW_SAMPLE_WEIGHT)
+                    + lux * AMBIENT_FILTER_NEW_SAMPLE_WEIGHT
+            }
+            None => lux,
+        };
+        self.filtered_lux = Some(filtered);
+
+        if !config.enabled {
+            return None;
+        }
+
+        let continuous = config.brightness_for_lux(filtered);
+        let target = quantize_brightness(continuous, config);
+        let changed = match self.applied {
+            Some(applied) => {
+                target != applied
+                    && (continuous - f64::from(applied)).abs() >= AMBIENT_BRIGHTNESS_HYSTERESIS
+            }
+            None => true,
+        };
+        changed.then(|| {
+            self.applied = Some(target);
+            target
+        })
+    }
+
+    fn reconfigure(&mut self, config: &AmbientBrightnessConfig) {
+        self.applied = if config.enabled {
+            self.filtered_lux
+                .map(|lux| quantize_brightness(config.brightness_for_lux(lux), config))
+        } else {
+            None
+        };
+    }
+}
+
+fn quantize_brightness(value: f64, config: &AmbientBrightnessConfig) -> u8 {
+    if value <= f64::from(config.minimum) {
+        return config.minimum;
+    }
+    if value >= f64::from(config.maximum) {
+        return config.maximum;
+    }
+    let stepped = (value / AMBIENT_BRIGHTNESS_STEP).round() * AMBIENT_BRIGHTNESS_STEP;
+    (stepped as u8).clamp(config.minimum, config.maximum)
+}
 
 impl Runtime {
     pub fn new(
@@ -138,6 +226,7 @@ impl Runtime {
             metrics: Metrics::new(),
             alert: None,
             artwork_in_flight: std::collections::HashSet::new(),
+            ambient_brightness: AmbientBrightnessController::default(),
             level: None,
             events,
             sender,
@@ -163,6 +252,14 @@ impl Runtime {
         self
     }
 
+    pub fn with_ambient_lux(mut self, lux: Option<f64>) -> Self {
+        if let Some(lux) = lux {
+            self.ambient_brightness
+                .observe(&self.state.config.ambient_brightness, lux);
+        }
+        self
+    }
+
     pub fn attach_device(&mut self, device: Arc<dyn DeckDevice>) {
         self.device = Some(device);
         self.invalidate_render_caches();
@@ -184,11 +281,7 @@ impl Runtime {
     /// Brings the deck up: brightness, a clean press state, and a full repaint.
     pub async fn start(&mut self) -> anyhow::Result<()> {
         let now_ms = self.now_ms();
-        if let Some(device) = &self.device {
-            if let Err(error) = device.set_brightness(self.state.config.brightness).await {
-                tracing::warn!(component = "device", error = %error, "could not set brightness");
-            }
-        }
+        self.set_deck_brightness(self.effective_brightness()).await;
 
         // A deadline crossed while the daemon was not running still fires once.
         self.reconcile_pomodoro().await;
@@ -282,17 +375,22 @@ impl Runtime {
                 self.state.presses.clear();
                 self.invalidate_render_caches();
             }
-            RuntimeEvent::DeviceReconnected => {
+            RuntimeEvent::DeviceReconnected(connection) => {
+                self.attach_device(connection.0);
                 self.metrics.device_reconnects += 1;
-                self.invalidate_render_caches();
-                self.state.presses.clear();
-                if let Some(device) = &self.device {
-                    let _ = device.set_brightness(self.state.config.brightness).await;
-                }
+                self.set_deck_brightness(self.effective_brightness()).await;
                 if self.screen_locked {
                     self.render_screensaver().await;
                 } else {
                     self.render().await;
+                }
+            }
+            RuntimeEvent::AmbientLight(lux) => {
+                if let Some(brightness) = self
+                    .ambient_brightness
+                    .observe(&self.state.config.ambient_brightness, lux)
+                {
+                    self.set_deck_brightness(brightness).await;
                 }
             }
             RuntimeEvent::Refreshed(id, result) => self.apply_refresh(id, result).await,
@@ -1118,13 +1216,13 @@ impl Runtime {
         match streamdeck_core::config::Config::load(&path) {
             Ok(config) => {
                 self.state.apply_config(Arc::new(config));
+                self.ambient_brightness
+                    .reconfigure(&self.state.config.ambient_brightness);
                 self.metrics.config_reloads += 1;
                 self.metrics.last_config_error = None;
                 let now_ms = self.now_ms();
                 self.state.schedule_refresh_deadlines(now_ms);
-                if let Some(device) = &self.device {
-                    let _ = device.set_brightness(self.state.config.brightness).await;
-                }
+                self.set_deck_brightness(self.effective_brightness()).await;
                 // Colours or thresholds may have changed, so repaint everything.
                 self.invalidate_render_caches();
                 self.render().await;
@@ -1200,6 +1298,11 @@ impl Runtime {
                     "columns": descriptor.grid.columns,
                 })
             }),
+            "brightness": {
+                "automatic": self.state.config.ambient_brightness.enabled,
+                "percent": self.effective_brightness(),
+                "ambient_lux": self.ambient_brightness.last_lux,
+            },
             "page": self.state.visible_page().slug(),
             "base_page": self.state.navigator.base_page().slug(),
             "panel_open": self.state.navigator.panel_is_open(),
@@ -1231,6 +1334,19 @@ impl Runtime {
                 .map(|id| id.slug())
                 .collect::<Vec<_>>(),
             "integrations": self.metrics.integrations(),
+            "application": self.state.feeds.application.peek().map(|application| serde_json::json!({
+                "name": application.name,
+                "bundle_id": application.bundle_id,
+                "pid": application.pid,
+            })),
+            "recent_applications": (0..5)
+                .filter_map(|index| self.state.recent_application(index))
+                .map(|application| serde_json::json!({
+                    "name": application.name,
+                    "bundle_id": application.bundle_id,
+                    "pid": application.pid,
+                }))
+                .collect::<Vec<_>>(),
             "pomodoro": {
                 "phase": pomodoro.phase.slug(),
                 "status": format!("{:?}", pomodoro.status).to_lowercase(),
@@ -1286,5 +1402,81 @@ impl Runtime {
 
     pub fn screensaver_scene(&self) -> Option<&'static str> {
         self.screen_locked.then(|| self.screensaver_scene.name())
+    }
+
+    fn effective_brightness(&self) -> u8 {
+        if self.state.config.ambient_brightness.enabled {
+            self.ambient_brightness
+                .applied
+                .unwrap_or(self.state.config.brightness)
+        } else {
+            self.state.config.brightness
+        }
+    }
+
+    async fn set_deck_brightness(&mut self, brightness: u8) {
+        let Some(device) = self.device.clone() else {
+            return;
+        };
+        match device.set_brightness(brightness).await {
+            Ok(()) => {}
+            Err(DeviceError::Disconnected) => {
+                let _ = self.sender.send(RuntimeEvent::DeviceDisconnected);
+            }
+            Err(error) => {
+                tracing::warn!(
+                    component = "device",
+                    error = %error,
+                    brightness,
+                    "could not set brightness"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ambient_brightness_tests {
+    use super::*;
+
+    #[test]
+    fn ambient_brightness_is_smoothed_quantized_and_bounded() {
+        let config = AmbientBrightnessConfig::default();
+        let mut controller = AmbientBrightnessController::default();
+
+        assert_eq!(controller.observe(&config, 0.0), Some(config.minimum));
+        let brighter = controller.observe(&config, 1_000.0);
+        assert!(brighter.is_some_and(|value| value > config.minimum));
+        assert_eq!(brighter.unwrap() % 5, 0);
+
+        for _ in 0..30 {
+            controller.observe(&config, 100_000.0);
+        }
+        assert_eq!(controller.applied, Some(config.maximum));
+    }
+
+    #[test]
+    fn ambient_brightness_hysteresis_ignores_small_fluctuations() {
+        let config = AmbientBrightnessConfig::default();
+        let mut controller = AmbientBrightnessController::default();
+
+        let initial = controller.observe(&config, 100.0).expect("initial");
+        for lux in [98.0, 102.0, 99.0, 101.0, 97.0, 103.0] {
+            assert_eq!(controller.observe(&config, lux), None);
+        }
+        assert_eq!(controller.applied, Some(initial));
+    }
+
+    #[test]
+    fn disabled_automatic_brightness_only_tracks_the_sensor() {
+        let config = AmbientBrightnessConfig {
+            enabled: false,
+            ..AmbientBrightnessConfig::default()
+        };
+        let mut controller = AmbientBrightnessController::default();
+
+        assert_eq!(controller.observe(&config, 500.0), None);
+        assert_eq!(controller.last_lux, Some(500.0));
+        assert_eq!(controller.applied, None);
     }
 }

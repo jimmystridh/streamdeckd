@@ -9,19 +9,23 @@ use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use streamdeck_core::config::Config;
+use streamdeck_core::integrations::application::ApplicationInfo;
 use streamdeck_core::integrations::audio::{AudioInventory, AudioSnapshot, AudioStatus};
+use streamdeck_core::integrations::ci::CiSnapshot;
 use streamdeck_core::integrations::claude::{ClaudeUsage, UsageWindow};
 use streamdeck_core::integrations::codex::{CodexUsage, CodexWindow};
+use streamdeck_core::integrations::departures::DepartureBoard;
 use streamdeck_core::integrations::github::GitHubSnapshot;
 use streamdeck_core::integrations::lake::{parse_current, parse_history};
 use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::parse_status;
+use streamdeck_core::integrations::system::{MacHealth, NetworkStatus, PowerSource, VpnState};
 use streamdeck_core::integrations::weather::parse_forecast;
 use streamdeck_core::model::PageId;
 use streamdeck_core::state::{PersistentState, StateStore};
 use streamdeck_macos::audio::CommandAudioAdapter;
-use streamdeck_macos::fake::{FakeCommandRunner, FakeWisprAdapter, Reply};
+use streamdeck_macos::fake::{FakeApplicationAdapter, FakeCommandRunner, FakeWisprAdapter, Reply};
 use streamdeck_macos::media::InactiveMediaAdapter;
 use streamdeck_macos::meet::SystemMeetLauncher;
 use streamdeck_macos::notify::SystemNotifier;
@@ -46,6 +50,7 @@ pub struct Harness {
     pub keys: mpsc::UnboundedSender<KeyEvent>,
     pub events: mpsc::UnboundedSender<RuntimeEvent>,
     pub commands: Arc<FakeCommandRunner>,
+    pub application: Arc<FakeApplicationAdapter>,
     pub wispr: Arc<FakeWisprAdapter>,
     pub store: StateStore,
     /// Kept alive so the state file's directory outlives the harness.
@@ -69,13 +74,17 @@ impl Harness {
         script(&commands);
         let runner = Arc::clone(&commands) as Arc<dyn CommandRunner>;
         let wispr = Arc::new(FakeWisprAdapter::default());
+        let application = Arc::new(FakeApplicationAdapter::default());
 
+        let http = HttpClient::new().expect("client");
         let services = Services {
             runner: Arc::clone(&runner),
             audio: Arc::new(CommandAudioAdapter::new(
                 Arc::clone(&runner),
                 config.tools.clone(),
             )),
+            application: Arc::clone(&application)
+                as Arc<dyn streamdeck_macos::application::ApplicationAdapter>,
             spotify: Arc::new(AppleScriptSpotifyAdapter::new(
                 Arc::clone(&runner),
                 config.tools.clone(),
@@ -91,7 +100,8 @@ impl Harness {
                 config.tools.clone(),
                 "/tmp/Google Meet.app",
             )),
-            http: HttpClient::new().expect("client"),
+            http: http.clone(),
+            vasttrafik: streamdeckd::services::vasttrafik::Client::new(http),
             // No helper binary in tests: the deck's alert state stands alone.
             helper_path: None,
         };
@@ -123,6 +133,7 @@ impl Harness {
             keys,
             events: sender,
             commands,
+            application,
             wispr,
             store,
             _directory: directory,
@@ -267,6 +278,30 @@ fn prefill(state: &mut RuntimeState) {
         },
         now_ms,
     );
+    state.feeds.ci.store(CiSnapshot::default(), now_ms);
+    state.feeds.mac_health.store(
+        MacHealth {
+            battery_percent: Some(80),
+            power_source: PowerSource::Ac,
+            charging: false,
+            memory_free_percent: 48,
+        },
+        now_ms,
+    );
+    state.feeds.network.store(
+        NetworkStatus {
+            connected: true,
+            interface: Some("en0".to_string()),
+            address: Some("10.0.1.49".to_string()),
+            vpn_name: "Tailscale".to_string(),
+            vpn_state: VpnState::Connected,
+        },
+        now_ms,
+    );
+    state
+        .feeds
+        .departures
+        .store(DepartureBoard::default(), now_ms);
     state.feeds.claude.store(
         ClaudeUsage {
             five_hour: Some(UsageWindow {
@@ -303,6 +338,14 @@ fn prefill(state: &mut RuntimeState) {
             application: Some("Google Chrome".to_string()),
             source: Some("YouTube".to_string()),
             title: Some("Deep Work Music".to_string()),
+        },
+        now_ms,
+    );
+    state.feeds.application.store(
+        ApplicationInfo {
+            name: "Finder".to_string(),
+            bundle_id: Some("com.apple.finder".to_string()),
+            pid: 42,
         },
         now_ms,
     );

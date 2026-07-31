@@ -4,6 +4,8 @@
 //! and so a command-based implementation can later be replaced by a native one
 //! without any caller noticing.
 
+pub mod ambient;
+pub mod application;
 pub mod audio;
 pub mod command;
 pub mod credentials;

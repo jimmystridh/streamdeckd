@@ -1765,6 +1765,7 @@ dependencies = [
  "hidapi",
  "image",
  "notify",
+ "percent-encoding",
  "reqwest",
  "serde",
  "serde_json",

@@ -101,10 +101,12 @@ pub enum PageId {
     Weather,
     Media,
     Wispr,
+    Application,
+    Dashboard,
 }
 
 impl PageId {
-    pub const ALL: [PageId; 9] = [
+    pub const ALL: [PageId; 11] = [
         PageId::Home,
         PageId::Mixer,
         PageId::GitHub,
@@ -114,6 +116,8 @@ impl PageId {
         PageId::Weather,
         PageId::Media,
         PageId::Wispr,
+        PageId::Application,
+        PageId::Dashboard,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -127,6 +131,8 @@ impl PageId {
             PageId::Weather => "weather",
             PageId::Media => "media",
             PageId::Wispr => "wispr",
+            PageId::Application => "application",
+            PageId::Dashboard => "dashboard",
         }
     }
 
@@ -141,6 +147,8 @@ impl PageId {
             PageId::Weather => "Weather",
             PageId::Media => "Media",
             PageId::Wispr => "Wispr Flow",
+            PageId::Application => "Current Application",
+            PageId::Dashboard => "Dashboard 2",
         }
     }
 
@@ -155,6 +163,8 @@ impl PageId {
             PageId::Weather => 6,
             PageId::Media => 7,
             PageId::Wispr => 8,
+            PageId::Application => 9,
+            PageId::Dashboard => 10,
         }
     }
 }
@@ -167,7 +177,7 @@ impl fmt::Display for PageId {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error(
-    "unknown page; expected one of home, mixer, github, spotify, stensjon, pomodoro, weather, media, wispr"
+    "unknown page; expected one of home, dashboard, mixer, github, spotify, stensjon, pomodoro, weather, media, wispr, application"
 )]
 pub struct PageIdParseError;
 
@@ -185,6 +195,8 @@ impl FromStr for PageId {
             "weather" => Ok(PageId::Weather),
             "media" => Ok(PageId::Media),
             "wispr" | "microphone" | "mic" => Ok(PageId::Wispr),
+            "application" | "app" | "current-application" => Ok(PageId::Application),
+            "dashboard" | "dashboard2" | "home2" | "more" => Ok(PageId::Dashboard),
             _ => Err(PageIdParseError),
         }
     }
@@ -205,10 +217,15 @@ pub enum IntegrationId {
     CodexUsage,
     Spotify,
     MediaSession,
+    FrontmostApplication,
+    MacHealth,
+    NetworkStatus,
+    CiRadar,
+    Departures,
 }
 
 impl IntegrationId {
-    pub const ALL: [IntegrationId; 11] = [
+    pub const ALL: [IntegrationId; 16] = [
         IntegrationId::AudioStatus,
         IntegrationId::AudioInventory,
         IntegrationId::Meetings,
@@ -220,6 +237,11 @@ impl IntegrationId {
         IntegrationId::CodexUsage,
         IntegrationId::Spotify,
         IntegrationId::MediaSession,
+        IntegrationId::FrontmostApplication,
+        IntegrationId::MacHealth,
+        IntegrationId::NetworkStatus,
+        IntegrationId::CiRadar,
+        IntegrationId::Departures,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -235,6 +257,11 @@ impl IntegrationId {
             IntegrationId::CodexUsage => "codex-usage",
             IntegrationId::Spotify => "spotify",
             IntegrationId::MediaSession => "media-session",
+            IntegrationId::FrontmostApplication => "frontmost-application",
+            IntegrationId::MacHealth => "mac-health",
+            IntegrationId::NetworkStatus => "network-status",
+            IntegrationId::CiRadar => "ci-radar",
+            IntegrationId::Departures => "departures",
         }
     }
 }
@@ -260,6 +287,7 @@ impl FromStr for IntegrationId {
             "claude" => Some(IntegrationId::ClaudeUsage),
             "codex" => Some(IntegrationId::CodexUsage),
             "media" => Some(IntegrationId::MediaSession),
+            "application" | "app" => Some(IntegrationId::FrontmostApplication),
             _ => None,
         };
         IntegrationId::ALL

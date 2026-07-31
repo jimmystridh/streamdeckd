@@ -9,16 +9,20 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Duration, Utc};
 use chrono_tz::Europe::Stockholm;
 use streamdeck_core::config::AudioTargetConfig;
+use streamdeck_core::integrations::application::ApplicationInfo;
 use streamdeck_core::integrations::audio::{
     AudioInventory, AudioSnapshot, AudioStatus, AudioTarget,
 };
+use streamdeck_core::integrations::ci::{CiRun, CiSnapshot, CiState};
 use streamdeck_core::integrations::claude::{ClaudeUsage, UsageWindow};
 use streamdeck_core::integrations::codex::{CodexUsage, CodexWindow};
+use streamdeck_core::integrations::departures::{Departure, DepartureBoard, StopDepartures};
 use streamdeck_core::integrations::github::{parse_search, GitHubSnapshot};
 use streamdeck_core::integrations::lake::{parse_current, parse_history};
 use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::{parse_status, SpotifyStatus};
+use streamdeck_core::integrations::system::{MacHealth, NetworkStatus, PowerSource, VpnState};
 use streamdeck_core::integrations::weather::parse_forecast;
 use streamdeck_core::model::{Grid, PageId};
 use streamdeck_core::pages::views::{render, RenderContext};
@@ -140,6 +144,92 @@ fn healthy() -> WorldView {
         inbox_overflow: false,
         updated_since: "2026-06-24".to_string(),
     });
+    world.ci = Feed::Ready(CiSnapshot {
+        runs: vec![
+            CiRun {
+                repository: "jimmystridh/streamdeckd".to_string(),
+                workflow: "CI".to_string(),
+                title: "fix dashboard".to_string(),
+                state: CiState::Failure,
+                updated_at: now(),
+                url: "https://github.com/jimmystridh/streamdeckd/actions/runs/42".to_string(),
+            },
+            CiRun {
+                repository: "jimmystridh/codex-sdk-rs".to_string(),
+                workflow: "CI".to_string(),
+                title: "tests".to_string(),
+                state: CiState::Success,
+                updated_at: now() - Duration::minutes(4),
+                url: "https://github.com/jimmystridh/codex-sdk-rs/actions/runs/41".to_string(),
+            },
+        ],
+    });
+    world.mac_health = Feed::Ready(MacHealth {
+        battery_percent: Some(80),
+        power_source: PowerSource::Ac,
+        charging: false,
+        memory_free_percent: 48,
+    });
+    world.network = Feed::Ready(NetworkStatus {
+        connected: true,
+        interface: Some("en0".to_string()),
+        address: Some("10.0.1.49".to_string()),
+        vpn_name: "Tailscale".to_string(),
+        vpn_state: VpnState::Connected,
+    });
+    let departure_at = now().fixed_offset() + Duration::minutes(6);
+    world.departures = Feed::Ready(DepartureBoard {
+        stops: vec![
+            StopDepartures {
+                label: "Gårdatorget".to_string(),
+                gid: "9021014002140000".to_string(),
+                line: Some("754".to_string()),
+                direction: Some("Mölndal resecentrum".to_string()),
+                departures: vec![
+                    Departure {
+                        line: "754".to_string(),
+                        direction: "Mölndal resecentrum".to_string(),
+                        platform: Some("A".to_string()),
+                        planned_at: departure_at,
+                        departure_at,
+                        cancelled: false,
+                    },
+                    Departure {
+                        line: "754".to_string(),
+                        direction: "Mölndal resecentrum".to_string(),
+                        platform: Some("B".to_string()),
+                        planned_at: departure_at + Duration::minutes(4),
+                        departure_at: departure_at + Duration::minutes(4),
+                        cancelled: false,
+                    },
+                ],
+            },
+            StopDepartures {
+                label: "Tallkotten".to_string(),
+                gid: "9021014012521000".to_string(),
+                line: Some("754".to_string()),
+                direction: Some("Heden".to_string()),
+                departures: vec![
+                    Departure {
+                        line: "754".to_string(),
+                        direction: "Heden".to_string(),
+                        platform: Some("B".to_string()),
+                        planned_at: departure_at + Duration::minutes(2),
+                        departure_at: departure_at + Duration::minutes(2),
+                        cancelled: false,
+                    },
+                    Departure {
+                        line: "754".to_string(),
+                        direction: "Heden".to_string(),
+                        platform: Some("B".to_string()),
+                        planned_at: departure_at + Duration::minutes(32),
+                        departure_at: departure_at + Duration::minutes(32),
+                        cancelled: false,
+                    },
+                ],
+            },
+        ],
+    });
 
     world.claude = Feed::Ready(ClaudeUsage {
         five_hour: Some(UsageWindow {
@@ -176,6 +266,28 @@ fn healthy() -> WorldView {
         source: Some("YouTube".to_string()),
         title: Some("Deep Work Music".to_string()),
     });
+    world.application = Feed::Ready(ApplicationInfo {
+        name: "Google Chrome".to_string(),
+        bundle_id: Some("com.google.Chrome".to_string()),
+        pid: 42,
+    });
+    world.recent_applications = vec![
+        ApplicationInfo {
+            name: "Ghostty".to_string(),
+            bundle_id: Some("com.mitchellh.ghostty".to_string()),
+            pid: 43,
+        },
+        ApplicationInfo {
+            name: "Slack".to_string(),
+            bundle_id: Some("com.tinyspeck.slackmacgap".to_string()),
+            pid: 44,
+        },
+        ApplicationInfo {
+            name: "Finder".to_string(),
+            bundle_id: Some("com.apple.finder".to_string()),
+            pid: 45,
+        },
+    ];
 
     world.panel_total_seconds = 10;
     world
@@ -296,6 +408,15 @@ fn home_is_healthy() {
 }
 
 #[test]
+fn dashboard_is_healthy() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check(
+        "dashboard",
+        &sheet(&mut renderer, PageId::Dashboard, &healthy()),
+    );
+}
+
+#[test]
 fn home_is_loading() {
     let mut renderer = Renderer::new().expect("renderer");
     let world = WorldView::empty(now(), 1_000, Stockholm);
@@ -399,6 +520,38 @@ fn media_page_shows_transport_owner_and_system_volume() {
 fn wispr_page_shows_the_configured_microphone_picker() {
     let mut renderer = Renderer::new().expect("renderer");
     check("wispr", &sheet(&mut renderer, PageId::Wispr, &healthy()));
+}
+
+#[test]
+fn application_page_shows_lifecycle_custom_and_recent_actions() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check(
+        "application",
+        &sheet(&mut renderer, PageId::Application, &healthy()),
+    );
+}
+
+#[test]
+fn application_page_shows_slack_actions() {
+    let mut renderer = Renderer::new().expect("renderer");
+    let mut world = healthy();
+    world.application = Feed::Ready(ApplicationInfo {
+        name: "Slack".to_string(),
+        bundle_id: Some("com.tinyspeck.slackmacgap".to_string()),
+        pid: 46,
+    });
+    world
+        .recent_applications
+        .retain(|application| application.name != "Slack");
+    world.recent_applications.push(ApplicationInfo {
+        name: "Google Chrome".to_string(),
+        bundle_id: Some("com.google.Chrome".to_string()),
+        pid: 47,
+    });
+    check(
+        "application-slack",
+        &sheet(&mut renderer, PageId::Application, &world),
+    );
 }
 
 #[test]

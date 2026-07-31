@@ -8,14 +8,18 @@ use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 
 use crate::integrations::{
+    application::ApplicationInfo,
     audio::AudioSnapshot,
+    ci::CiSnapshot,
     claude::ClaudeUsage,
     codex::CodexUsage,
+    departures::DepartureBoard,
     github::GitHubSnapshot,
     lake::{LakeHistory, LakeReading},
     media::MediaStatus,
     meetings::Meeting,
     spotify::SpotifyStatus,
+    system::{MacHealth, NetworkStatus},
     weather::WeatherSnapshot,
 };
 use crate::pomodoro::PomodoroSnapshot;
@@ -96,10 +100,16 @@ pub struct WorldView {
     pub lake_current: Feed<LakeReading>,
     pub lake_history: Feed<LakeHistory>,
     pub github: Feed<GitHubSnapshot>,
+    pub ci: Feed<CiSnapshot>,
+    pub mac_health: Feed<MacHealth>,
+    pub network: Feed<NetworkStatus>,
+    pub departures: Feed<DepartureBoard>,
     pub claude: Feed<ClaudeUsage>,
     pub codex: Feed<CodexUsage>,
     pub spotify: Feed<SpotifyStatus>,
     pub media: Feed<MediaStatus>,
+    pub application: Feed<ApplicationInfo>,
+    pub recent_applications: Vec<ApplicationInfo>,
 
     /// The weather tile currently showing its expanded reading, if any.
     pub weather_detail: Option<crate::model::WeatherTile>,
@@ -132,10 +142,16 @@ impl WorldView {
             lake_current: Feed::Loading,
             lake_history: Feed::Loading,
             github: Feed::Loading,
+            ci: Feed::Loading,
+            mac_health: Feed::Loading,
+            network: Feed::Loading,
+            departures: Feed::Loading,
             claude: Feed::Loading,
             codex: Feed::Loading,
             spotify: Feed::Loading,
             media: Feed::Loading,
+            application: Feed::Loading,
+            recent_applications: Vec::new(),
             weather_detail: None,
             panel_seconds_remaining: None,
             panel_total_seconds: 10,

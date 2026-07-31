@@ -8,10 +8,16 @@ version = 1
 # Optional: set this in a local config when multiple decks are connected.
 # device_serial = "your-device-serial"
 startup_page = "home"
+# Used as the fallback when automatic brightness is disabled or unavailable.
 brightness = 60
 long_press_ms = 600
 temporary_panel_seconds = 10
 blank_on_exit = false
+
+[ambient_brightness]
+enabled = true
+minimum = 15
+maximum = 75
 
 [location]
 name = "Stensjön"
@@ -45,6 +51,35 @@ item_limit = 100
 [[github.repository_aliases]]
 prefix = "visma.administration."
 replacement = "admin."
+
+[ci]
+repositories = [
+  "jimmystridh/codex-sdk-swift",
+  "jimmystridh/codex-sdk-rs",
+  "jimmystridh/streamdeckd",
+]
+
+[quick_capture]
+personal_vault = "JS-Agent"
+work_vault = "JS-Visma-Agent"
+folder = "Inbox"
+
+[network]
+vpn_name = "Tailscale"
+vpn_application = "Tailscale"
+
+[vasttrafik]
+[[vasttrafik.stops]]
+label = "Gårdatorget"
+gid = "9021014002140000"
+line = "754"
+direction = "Mölndal resecentrum"
+
+[[vasttrafik.stops]]
+label = "Tallkotten"
+gid = "9021014012521000"
+line = "754"
+direction = "Heden"
 
 [usage]
 warning_percent = 50

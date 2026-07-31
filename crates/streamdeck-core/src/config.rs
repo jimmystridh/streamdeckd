@@ -45,6 +45,8 @@ pub struct Config {
     pub startup_page: PageId,
     #[serde(default = "default_brightness")]
     pub brightness: u8,
+    #[serde(default)]
+    pub ambient_brightness: AmbientBrightnessConfig,
     #[serde(default = "default_long_press_ms")]
     pub long_press_ms: u64,
     #[serde(default = "default_panel_seconds")]
@@ -62,6 +64,14 @@ pub struct Config {
     pub meetings: MeetingsConfig,
     #[serde(default)]
     pub github: GitHubConfig,
+    #[serde(default)]
+    pub ci: CiConfig,
+    #[serde(default)]
+    pub quick_capture: QuickCaptureConfig,
+    #[serde(default)]
+    pub network: NetworkConfig,
+    #[serde(default)]
+    pub vasttrafik: VasttrafikConfig,
     #[serde(default)]
     pub usage: UsageConfig,
     #[serde(default)]
@@ -81,6 +91,7 @@ impl Default for Config {
             device_serial: None,
             startup_page: default_startup_page(),
             brightness: default_brightness(),
+            ambient_brightness: AmbientBrightnessConfig::default(),
             long_press_ms: default_long_press_ms(),
             temporary_panel_seconds: default_panel_seconds(),
             blank_on_exit: false,
@@ -89,12 +100,44 @@ impl Default for Config {
             pomodoro: PomodoroConfig::default(),
             meetings: MeetingsConfig::default(),
             github: GitHubConfig::default(),
+            ci: CiConfig::default(),
+            quick_capture: QuickCaptureConfig::default(),
+            network: NetworkConfig::default(),
+            vasttrafik: VasttrafikConfig::default(),
             usage: UsageConfig::default(),
             wispr: WisprConfig::default(),
             spotify: SpotifyConfig::default(),
             audio: AudioConfig::default(),
             tools: ToolsConfig::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmbientBrightnessConfig {
+    pub enabled: bool,
+    pub minimum: u8,
+    pub maximum: u8,
+}
+
+impl Default for AmbientBrightnessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            minimum: 15,
+            maximum: 75,
+        }
+    }
+}
+
+impl AmbientBrightnessConfig {
+    pub fn brightness_for_lux(&self, lux: f64) -> f64 {
+        const FULL_BRIGHTNESS_LUX: f64 = 1_000.0;
+
+        let normalized = lux.max(0.0).ln_1p() / FULL_BRIGHTNESS_LUX.ln_1p();
+        f64::from(self.minimum)
+            + normalized.clamp(0.0, 1.0) * f64::from(self.maximum.saturating_sub(self.minimum))
     }
 }
 
@@ -213,6 +256,96 @@ impl Default for GitHubConfig {
 pub struct RepositoryAlias {
     pub prefix: String,
     pub replacement: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CiConfig {
+    pub repositories: Vec<String>,
+}
+
+impl Default for CiConfig {
+    fn default() -> Self {
+        Self {
+            repositories: vec![
+                "jimmystridh/codex-sdk-swift".to_string(),
+                "jimmystridh/codex-sdk-rs".to_string(),
+                "jimmystridh/streamdeckd".to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuickCaptureConfig {
+    pub personal_vault: String,
+    pub work_vault: String,
+    pub folder: String,
+}
+
+impl Default for QuickCaptureConfig {
+    fn default() -> Self {
+        Self {
+            personal_vault: "JS-Agent".to_string(),
+            work_vault: "JS-Visma-Agent".to_string(),
+            folder: "Inbox".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    pub vpn_name: String,
+    pub vpn_application: String,
+}
+
+impl Default for NetworkConfig {
+    fn default() -> Self {
+        Self {
+            vpn_name: "Tailscale".to_string(),
+            vpn_application: "Tailscale".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VasttrafikConfig {
+    pub stops: Vec<VasttrafikStopConfig>,
+}
+
+impl Default for VasttrafikConfig {
+    fn default() -> Self {
+        Self {
+            stops: vec![
+                VasttrafikStopConfig {
+                    label: "Gårdatorget".to_string(),
+                    gid: "9021014002140000".to_string(),
+                    line: "754".to_string(),
+                    direction: "Mölndal resecentrum".to_string(),
+                },
+                VasttrafikStopConfig {
+                    label: "Tallkotten".to_string(),
+                    gid: "9021014012521000".to_string(),
+                    line: "754".to_string(),
+                    direction: "Heden".to_string(),
+                },
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VasttrafikStopConfig {
+    pub label: String,
+    pub gid: String,
+    #[serde(default)]
+    pub line: String,
+    #[serde(default)]
+    pub direction: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -375,6 +508,15 @@ impl Config {
                 self.brightness
             )));
         }
+        if !(10..=100).contains(&self.ambient_brightness.minimum)
+            || !(10..=100).contains(&self.ambient_brightness.maximum)
+            || self.ambient_brightness.minimum >= self.ambient_brightness.maximum
+        {
+            return Err(invalid(
+                "ambient_brightness minimum and maximum must be between 10 and 100, with minimum below maximum"
+                    .to_string(),
+            ));
+        }
         if !(150..=3_000).contains(&self.long_press_ms) {
             return Err(invalid(format!(
                 "long_press_ms must be between 150 and 3000, got {}",
@@ -451,6 +593,55 @@ impl Config {
             return Err(invalid(
                 "github.item_limit must be between 1 and 100".to_string(),
             ));
+        }
+        if self.ci.repositories.is_empty() || self.ci.repositories.len() > 8 {
+            return Err(invalid(
+                "ci.repositories must contain between 1 and 8 repositories".to_string(),
+            ));
+        }
+        if self
+            .ci
+            .repositories
+            .iter()
+            .any(|repository| !is_github_repository(repository))
+        {
+            return Err(invalid(
+                "ci.repositories entries must use the owner/repository form".to_string(),
+            ));
+        }
+        if !is_safe_label(&self.quick_capture.personal_vault, 80)
+            || !is_safe_label(&self.quick_capture.work_vault, 80)
+            || !is_safe_relative_folder(&self.quick_capture.folder)
+        {
+            return Err(invalid(
+                "quick_capture vaults and folder must be printable local Obsidian names"
+                    .to_string(),
+            ));
+        }
+        if !is_safe_label(&self.network.vpn_name, 80)
+            || !is_safe_label(&self.network.vpn_application, 80)
+        {
+            return Err(invalid(
+                "network VPN name and application must be printable names".to_string(),
+            ));
+        }
+        if self.vasttrafik.stops.is_empty() || self.vasttrafik.stops.len() > 2 {
+            return Err(invalid(
+                "vasttrafik.stops must contain one or two stops".to_string(),
+            ));
+        }
+        for stop in &self.vasttrafik.stops {
+            if !is_safe_label(&stop.label, 24)
+                || stop.gid.len() != 16
+                || !stop.gid.chars().all(|character| character.is_ascii_digit())
+                || ((!stop.line.is_empty() || !stop.direction.is_empty())
+                    && (!is_safe_label(&stop.line, 8) || !is_safe_label(&stop.direction, 40)))
+            {
+                return Err(invalid(
+                    "vasttrafik stops need a short label, a 16-digit GID, and an optional complete line/direction filter"
+                        .to_string(),
+                ));
+            }
         }
         if self.usage.warning_percent >= self.usage.critical_percent
             || self.usage.critical_percent > 100
@@ -572,6 +763,33 @@ fn is_safe_sound_name(value: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric())
 }
 
+fn is_safe_label(value: &str, limit: usize) -> bool {
+    !value.trim().is_empty()
+        && value.chars().count() <= limit
+        && !value.chars().any(char::is_control)
+        && !value.contains(['&', '?', '#'])
+}
+
+fn is_safe_relative_folder(value: &str) -> bool {
+    is_safe_label(value, 100)
+        && !value.starts_with('/')
+        && value
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+fn is_github_repository(value: &str) -> bool {
+    let Some((owner, repository)) = value.split_once('/') else {
+        return false;
+    };
+    !owner.is_empty()
+        && !repository.is_empty()
+        && !repository.contains('/')
+        && owner.chars().chain(repository.chars()).all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+}
+
 pub fn is_spotify_playlist_uri(value: &str) -> bool {
     value.strip_prefix("spotify:playlist:").is_some_and(|id| {
         id.len() == 22
@@ -615,12 +833,58 @@ mod tests {
         assert_eq!(config.wispr.microphones.len(), 3);
         assert_eq!(config.wispr.microphones[2].name, "RODE NT-USB");
         assert_eq!(config.spotify.playlists.len(), 5);
+        assert_eq!(config.vasttrafik.stops.len(), 2);
+        assert_eq!(config.network.vpn_name, "Tailscale");
+        assert_eq!(config.quick_capture.personal_vault, "JS-Agent");
+        assert!(config
+            .ci
+            .repositories
+            .contains(&"jimmystridh/streamdeckd".to_string()));
         assert_eq!(config.location.timezone(), chrono_tz::Europe::Stockholm);
     }
 
     #[test]
     fn defaults_are_valid() {
         Config::default().validate().expect("defaults are valid");
+    }
+
+    #[test]
+    fn ambient_brightness_uses_a_bounded_monotonic_curve() {
+        let config = AmbientBrightnessConfig::default();
+        let samples = [0.0, 1.0, 10.0, 100.0, 500.0, 1_000.0, 10_000.0]
+            .map(|lux| config.brightness_for_lux(lux));
+
+        assert_eq!(samples[0], f64::from(config.minimum));
+        assert_eq!(samples[5], f64::from(config.maximum));
+        assert_eq!(samples[6], f64::from(config.maximum));
+        assert!(samples.windows(2).all(|pair| pair[0] <= pair[1]));
+    }
+
+    #[test]
+    fn ambient_brightness_bounds_are_validated() {
+        let mut config = Config::default();
+        config.ambient_brightness.minimum = 80;
+        config.ambient_brightness.maximum = 60;
+        assert!(config.validate().is_err());
+
+        config.ambient_brightness.minimum = 9;
+        config.ambient_brightness.maximum = 60;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn dashboard_integration_configuration_is_bounded_and_sanitized() {
+        let mut config = Config::default();
+        config.ci.repositories = vec!["not-a-repository".to_string()];
+        assert!(config.validate().is_err());
+
+        config = Config::default();
+        config.quick_capture.folder = "../elsewhere".to_string();
+        assert!(config.validate().is_err());
+
+        config = Config::default();
+        config.vasttrafik.stops[0].gid = "not-a-gid".to_string();
+        assert!(config.validate().is_err());
     }
 
     #[test]

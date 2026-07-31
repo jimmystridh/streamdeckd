@@ -9,7 +9,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use streamdeck_core::integrations::application::{ApplicationInfo, CustomApplicationAction};
 
+use crate::application::{ApplicationAdapter, ApplicationControl, ApplicationError};
 use crate::command::{CommandError, CommandRunner, Output};
 use crate::wispr::{WisprAdapter, WisprError};
 
@@ -208,6 +210,91 @@ impl WisprAdapter for FakeWisprAdapter {
             .lock()
             .expect("fake Wispr lock")
             .push(WisprInvocation::Microphone(name.to_string()));
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplicationInvocation {
+    pub application: ApplicationInfo,
+    pub control: ApplicationControl,
+}
+
+#[derive(Debug)]
+pub struct FakeApplicationAdapter {
+    current: Mutex<ApplicationInfo>,
+    calls: Mutex<Vec<ApplicationInvocation>>,
+    custom_calls: Mutex<Vec<(ApplicationInfo, CustomApplicationAction)>>,
+}
+
+impl Default for FakeApplicationAdapter {
+    fn default() -> Self {
+        Self::new(ApplicationInfo {
+            name: "Finder".to_string(),
+            bundle_id: Some("com.apple.finder".to_string()),
+            pid: 42,
+        })
+    }
+}
+
+impl FakeApplicationAdapter {
+    pub fn new(current: ApplicationInfo) -> Self {
+        Self {
+            current: Mutex::new(current),
+            calls: Mutex::new(Vec::new()),
+            custom_calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn set_current(&self, current: ApplicationInfo) {
+        *self.current.lock().expect("fake application lock") = current;
+    }
+
+    pub fn calls(&self) -> Vec<ApplicationInvocation> {
+        self.calls
+            .lock()
+            .expect("fake application calls lock")
+            .clone()
+    }
+
+    pub fn custom_calls(&self) -> Vec<(ApplicationInfo, CustomApplicationAction)> {
+        self.custom_calls
+            .lock()
+            .expect("fake application custom calls lock")
+            .clone()
+    }
+}
+
+#[async_trait]
+impl ApplicationAdapter for FakeApplicationAdapter {
+    async fn frontmost(&self) -> Result<ApplicationInfo, ApplicationError> {
+        Ok(self.current.lock().expect("fake application lock").clone())
+    }
+
+    async fn control(
+        &self,
+        application: &ApplicationInfo,
+        control: ApplicationControl,
+    ) -> Result<(), ApplicationError> {
+        self.calls
+            .lock()
+            .expect("fake application calls lock")
+            .push(ApplicationInvocation {
+                application: application.clone(),
+                control,
+            });
+        Ok(())
+    }
+
+    async fn custom(
+        &self,
+        application: &ApplicationInfo,
+        action: CustomApplicationAction,
+    ) -> Result<(), ApplicationError> {
+        self.custom_calls
+            .lock()
+            .expect("fake application custom calls lock")
+            .push((application.clone(), action));
         Ok(())
     }
 }

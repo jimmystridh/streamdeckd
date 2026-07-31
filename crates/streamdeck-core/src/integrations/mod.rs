@@ -4,14 +4,18 @@
 //! — into a typed domain value, with validation and bounds. Nothing here performs
 //! I/O, so every parse rule, cap, and rejection is covered by a fixture test.
 
+pub mod application;
 pub mod audio;
+pub mod ci;
 pub mod claude;
 pub mod codex;
+pub mod departures;
 pub mod github;
 pub mod lake;
 pub mod media;
 pub mod meetings;
 pub mod spotify;
+pub mod system;
 pub mod weather;
 
 /// Guards against a hostile or broken endpoint returning an unbounded body.

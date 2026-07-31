@@ -4,12 +4,16 @@
 //! the CLI preview render exactly what the hardware does.
 
 use crate::config::{SpotifyPlaylistConfig, WisprMicrophoneConfig};
+use crate::integrations::application::{
+    ApplicationInfo, ApplicationKind, ContextAction, CustomApplicationAction,
+};
 use crate::integrations::audio::{AudioTarget, Resolution};
 use crate::integrations::claude::UsageSeverity;
 use crate::integrations::github::MetricKind;
 use crate::integrations::lake::LakeReading;
 use crate::integrations::media::MediaStatus;
 use crate::integrations::spotify::{PlayerState, SpotifyStatus};
+use crate::integrations::system::{PowerSource, VpnState};
 use crate::integrations::weather::{SymbolFamily, WeatherDay, WeatherSnapshot, WeatherSymbol};
 use crate::model::{AudioKind, WeatherTile};
 use crate::pomodoro::{Phase, Status};
@@ -22,7 +26,7 @@ use crate::text::{
 use crate::view::{Color, Icon, KeyStatus, KeyView, TextRun, Weight};
 
 use super::theme;
-use super::{MediaCommand, SpotifyCommand, StatsScope, Tile};
+use super::{ApplicationCommand, MediaCommand, SpotifyCommand, StatsScope, Tile};
 use chrono::Timelike;
 
 /// Configuration-derived inputs the tiles need but the world view does not carry.
@@ -77,6 +81,14 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
             .glyph(Icon::Home)
             .header("HOME")
             .footer("BACK"),
+        Tile::DashboardButton => KeyView::solid(theme::NAVIGATION)
+            .glyph(Icon::Dashboard)
+            .header("DASHBOARD 2")
+            .footer("MORE"),
+        Tile::QuickCapture => KeyView::solid(theme::QUICK_CAPTURE)
+            .glyph(Icon::Capture)
+            .header("QUICK CAPTURE")
+            .footer("TAP PERSONAL · HOLD WORK"),
         Tile::MixerSummary => mixer_summary(world),
         Tile::CodexFiveHour => codex_five_hour(world),
         Tile::ClaudeFiveHour => claude_window(world, false),
@@ -84,12 +96,20 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
         Tile::CodexUsage => codex_usage(world),
         Tile::SpotifyGlance => spotify_glance(world),
         Tile::MediaGlance => media_glance(),
+        Tile::CurrentApplication => current_application(world, "TAP FOR ACTIONS"),
+        Tile::ApplicationControl(command) => application_control(command),
+        Tile::ApplicationContext(slot) => application_context(context, slot),
+        Tile::ApplicationRecent(slot) => application_recent(world, slot),
         Tile::WisprGlance => wispr_glance(world),
         Tile::WisprPickerHeader => wispr_picker_header(),
         Tile::WisprMicrophone(index) => wispr_microphone(context, index),
         Tile::MediaControl(command) => media_control(command),
         Tile::MediaSource => media_source(world),
         Tile::GitHubSummary => github_summary(world),
+        Tile::CiRadar => ci_radar(world),
+        Tile::MacHealth => mac_health(world),
+        Tile::NetworkVpn => network_vpn(world),
+        Tile::DepartureBoard(index) => departure_board(world, index),
         Tile::PomodoroGlance => pomodoro_timer(world, "TAP START · HOLD"),
         Tile::Meeting(index) => meeting(world, index),
         Tile::WeatherCurrent => weather_current(world),
@@ -319,6 +339,131 @@ fn media_glance() -> KeyView {
         .footer("HOLD: CONTROLS")
 }
 
+fn current_application(world: &WorldView, footer: &str) -> KeyView {
+    let Some(application) = world.application.value() else {
+        return offline_or_loading(&world.application, "CURRENT APP", "APP UNAVAILABLE");
+    };
+    KeyView::solid(application_color(application))
+        .header("CURRENT APP")
+        .value(upper_short(&application.name, 20), 21.0)
+        .footer(footer)
+        .status(world.application.status())
+}
+
+fn application_color(application: &ApplicationInfo) -> Color {
+    match application.kind() {
+        ApplicationKind::Spotify => theme::SPOTIFY,
+        ApplicationKind::Wispr => theme::WISPR,
+        ApplicationKind::Meet => theme::MEETING_NEXT,
+        ApplicationKind::Ghostty => Color::hex(0x6941c6),
+        ApplicationKind::Chrome | ApplicationKind::Browser => theme::APPLICATION,
+        ApplicationKind::Finder => Color::hex(0x1479c9),
+        ApplicationKind::Slack => Color::hex(0x4a154b),
+        ApplicationKind::Other => theme::SURFACE_RAISED,
+    }
+}
+
+fn application_control(command: ApplicationCommand) -> KeyView {
+    match command {
+        ApplicationCommand::Activate => KeyView::solid(theme::APPLICATION)
+            .header("ALL WINDOWS")
+            .glyph(Icon::Application)
+            .footer("BRING FORWARD"),
+        ApplicationCommand::Hide => KeyView::solid(theme::SURFACE_RAISED)
+            .header("HIDE APP")
+            .glyph(Icon::Minus)
+            .footer("KEEP RUNNING"),
+        ApplicationCommand::Quit => KeyView::solid(theme::CRITICAL)
+            .header("QUIT APP")
+            .glyph(Icon::Cross)
+            .footer("HOLD TO QUIT"),
+        ApplicationCommand::ForceQuit => KeyView::solid(theme::CRITICAL.darken(0.22))
+            .header("FORCE QUIT")
+            .glyph(Icon::Warning)
+            .footer("HOLD TO FORCE"),
+        ApplicationCommand::Context(_) | ApplicationCommand::Recent(_) => KeyView::blank(),
+    }
+}
+
+fn application_context(context: &RenderContext<'_>, slot: usize) -> KeyView {
+    let world = context.world;
+    let Some(application) = world.application.value() else {
+        return offline_or_loading(&world.application, "APP ACTION", "APP UNAVAILABLE");
+    };
+
+    match application.context_action(slot) {
+        ContextAction::SpotifyPrevious => spotify_control(world, SpotifyCommand::Previous),
+        ContextAction::SpotifyPlayPause => spotify_control(world, SpotifyCommand::PlayPause),
+        ContextAction::SpotifyNext => spotify_control(world, SpotifyCommand::Next),
+        ContextAction::SpotifySeek(delta) => spotify_control(world, SpotifyCommand::Seek(delta)),
+        ContextAction::WisprToggle => wispr_glance(world),
+        ContextAction::WisprMicrophone(index) => wispr_microphone(context, index),
+        ContextAction::OpenMeeting(index) => meeting(world, index),
+        ContextAction::Navigate(crate::model::PageId::Wispr) => KeyView::solid(theme::WISPR)
+            .header("MIC PICKER")
+            .glyph(Icon::Microphone)
+            .footer("OPEN CONTROLS"),
+        ContextAction::Navigate(crate::model::PageId::Media) => KeyView::solid(theme::MEDIA)
+            .header("MEDIA")
+            .glyph(Icon::PlayPause)
+            .footer("OPEN CONTROLS"),
+        ContextAction::Navigate(crate::model::PageId::Mixer) => mixer_summary(world),
+        ContextAction::Custom(action) => custom_application_action(action),
+        ContextAction::Navigate(_) | ContextAction::None => KeyView::blank(),
+    }
+}
+
+fn custom_application_action(action: CustomApplicationAction) -> KeyView {
+    use CustomApplicationAction::*;
+
+    let (header, icon, footer) = match action {
+        GhosttyNewWindow => ("NEW WINDOW", Icon::Application, "GHOSTTY"),
+        GhosttyNewTab => ("NEW TAB", Icon::Plus, "GHOSTTY"),
+        GhosttySplitRight => ("SPLIT RIGHT", Icon::Application, "GHOSTTY"),
+        GhosttySplitDown => ("SPLIT DOWN", Icon::Application, "GHOSTTY"),
+        GhosttyToggleSplitZoom => ("ZOOM SPLIT", Icon::Application, "TOGGLE"),
+        ChromeNewTab => ("NEW TAB", Icon::Plus, "CHROME"),
+        ChromeIncognito => ("INCOGNITO", Icon::Application, "NEW WINDOW"),
+        ChromeDownloads => ("DOWNLOADS", Icon::Application, "OPEN PAGE"),
+        ChromeHistory => ("HISTORY", Icon::Application, "OPEN PAGE"),
+        ChromeExtensions => ("EXTENSIONS", Icon::Application, "OPEN PAGE"),
+        FinderNewWindow => ("NEW WINDOW", Icon::Application, "FINDER"),
+        FinderHome => ("HOME FOLDER", Icon::Home, "OPEN"),
+        FinderDownloads => ("DOWNLOADS", Icon::Application, "OPEN"),
+        FinderApplications => ("APPLICATIONS", Icon::Application, "OPEN"),
+        FinderAirDrop => ("AIRDROP", Icon::Application, "OPEN"),
+        SlackNewMessage => ("NEW MESSAGE", Icon::Message, "COMPOSE"),
+        SlackSearch => ("SEARCH", Icon::Search, "SLACK"),
+        SlackActivity => ("ACTIVITY", Icon::Activity, "OPEN VIEW"),
+        SlackThreads => ("THREADS", Icon::Thread, "OPEN VIEW"),
+        SlackDirectMessages => ("DIRECT MSGS", Icon::Message, "BROWSE"),
+    };
+    let color = match action {
+        SlackNewMessage | SlackSearch | SlackActivity | SlackThreads | SlackDirectMessages => {
+            Color::hex(0x4a154b)
+        }
+        _ => theme::APPLICATION,
+    };
+    KeyView::solid(color)
+        .header(header)
+        .glyph(icon)
+        .footer(footer)
+}
+
+fn application_recent(world: &WorldView, slot: usize) -> KeyView {
+    let Some(application) = world.recent_applications.get(slot) else {
+        return KeyView::solid(theme::SURFACE_SUNKEN)
+            .header("RECENT APP")
+            .glyph(Icon::Application)
+            .footer("NONE YET")
+            .status(KeyStatus::Disabled);
+    };
+    KeyView::solid(application_color(application))
+        .header("RECENT APP")
+        .value(upper_short(&application.name, 18), 20.0)
+        .footer("SWITCH")
+}
+
 fn wispr_glance(world: &WorldView) -> KeyView {
     if world.wispr_hands_free {
         return KeyView::solid(theme::LIVE)
@@ -418,6 +563,145 @@ fn github_summary(world: &WorldView) -> KeyView {
             ),
         ])
         .status(world.github.status())
+}
+
+fn ci_radar(world: &WorldView) -> KeyView {
+    let Some(snapshot) = world.ci.value() else {
+        return offline_or_loading(&world.ci, "CI RADAR", "ACTIONS OFFLINE");
+    };
+    let failures = snapshot.failures();
+    let running = snapshot.running();
+    let background = if failures > 0 {
+        theme::ERROR
+    } else if running > 0 {
+        theme::WARNING
+    } else {
+        theme::LIVE
+    };
+
+    KeyView::solid(background)
+        .header("CI RADAR")
+        .rows(vec![
+            ("FAIL".to_string(), failures.to_string()),
+            ("RUN".to_string(), running.to_string()),
+            ("OK".to_string(), snapshot.successes().to_string()),
+        ])
+        .status(world.ci.status())
+}
+
+fn mac_health(world: &WorldView) -> KeyView {
+    let Some(health) = world.mac_health.value() else {
+        return offline_or_loading(&world.mac_health, "MAC HEALTH", "SYSTEM OFFLINE");
+    };
+    let battery = health
+        .battery_percent
+        .map_or_else(|| "—".to_string(), |percent| format!("{percent}%"));
+    let power = if health.charging {
+        "CHG"
+    } else {
+        match health.power_source {
+            PowerSource::Ac => "AC",
+            PowerSource::Battery => "BATT",
+            PowerSource::Unknown => "—",
+        }
+    };
+    let background = if health.memory_free_percent < 15
+        || (health.power_source == PowerSource::Battery
+            && health.battery_percent.is_some_and(|percent| percent < 15))
+    {
+        theme::WARNING
+    } else {
+        theme::MAC_HEALTH
+    };
+
+    KeyView::solid(background)
+        .header("MAC HEALTH")
+        .rows(vec![
+            ("BAT".to_string(), battery),
+            (
+                "MEM FREE".to_string(),
+                format!("{}%", health.memory_free_percent),
+            ),
+            ("POWER".to_string(), power.to_string()),
+        ])
+        .status(world.mac_health.status())
+}
+
+fn network_vpn(world: &WorldView) -> KeyView {
+    let Some(network) = world.network.value() else {
+        return offline_or_loading(&world.network, "NETWORK", "NETWORK OFFLINE");
+    };
+    let vpn = match network.vpn_state {
+        VpnState::Connected => "ON",
+        VpnState::Disconnected => "OFF",
+        VpnState::Unavailable => "—",
+    };
+    let background = if !network.connected {
+        theme::ERROR
+    } else if network.vpn_state == VpnState::Connected {
+        theme::LIVE
+    } else {
+        theme::NETWORK
+    };
+
+    KeyView::solid(background)
+        .header("NETWORK / VPN")
+        .rows(vec![
+            (
+                "NET".to_string(),
+                if network.connected {
+                    "ONLINE"
+                } else {
+                    "OFFLINE"
+                }
+                .to_string(),
+            ),
+            (
+                "LINK".to_string(),
+                network.interface.as_deref().unwrap_or("—").to_uppercase(),
+            ),
+            (upper_short(&network.vpn_name, 10), vpn.to_string()),
+        ])
+        .status(world.network.status())
+}
+
+fn departure_board(world: &WorldView, index: usize) -> KeyView {
+    let Some(board) = world.departures.value() else {
+        return offline_or_loading(&world.departures, "DEPARTURES", "TRANSIT OFFLINE");
+    };
+    let Some(stop) = board.stops.get(index) else {
+        return KeyView::solid(theme::DISABLED)
+            .header("DEPARTURES")
+            .glyph(Icon::Bus)
+            .footer("STOP NOT CONFIGURED")
+            .status(KeyStatus::Disabled);
+    };
+    let rows = ["NÄSTA", "DÄREFTER"]
+        .into_iter()
+        .enumerate()
+        .map(|(index, label)| {
+            let countdown = stop.departures.get(index).map_or_else(
+                || "—".to_string(),
+                |departure| {
+                    if departure.cancelled {
+                        "X".to_string()
+                    } else {
+                        departure.countdown(world.now)
+                    }
+                },
+            );
+            (label.to_string(), countdown)
+        })
+        .collect();
+
+    let mut view = KeyView::solid(theme::VASTTRAFIK)
+        .header(upper_short(&stop.label, 16))
+        .rows(rows)
+        .status(world.departures.status());
+    if let Some(line) = &stop.line {
+        view = view.header_right(upper_short(line, 8));
+    }
+    view
 }
 
 fn meeting(world: &WorldView, index: usize) -> KeyView {
@@ -1223,6 +1507,7 @@ pub fn weather_summary(snapshot: &WeatherSnapshot) -> String {
 mod tests {
     use super::*;
     use crate::config::AudioTargetConfig;
+    use crate::integrations::application::ApplicationInfo;
     use crate::integrations::audio::{AudioInventory, AudioSnapshot, AudioStatus};
     use crate::integrations::claude::{ClaudeUsage, UsageWindow};
     use crate::integrations::codex::{CodexUsage, CodexWindow};
@@ -1725,6 +2010,35 @@ mod tests {
         let view = view(Tile::MediaSource, &world);
         assert_eq!(view.value.expect("owner").text, "YOUTUBE");
         assert_eq!(view.footer_center.expect("title").text, "Deep Work Music");
+    }
+
+    #[test]
+    fn current_application_and_its_context_actions_are_readable() {
+        let mut world = world();
+        world.application = Feed::Ready(ApplicationInfo {
+            name: "Google Chrome".to_string(),
+            bundle_id: Some("com.google.Chrome".to_string()),
+            pid: 42,
+        });
+
+        let glance = view(Tile::CurrentApplication, &world);
+        assert_eq!(glance.value.expect("application").text, "GOOGLE CHROME");
+        assert_eq!(
+            glance.footer_center.expect("affordance").text,
+            "TAP FOR ACTIONS"
+        );
+
+        let incognito = view(Tile::ApplicationContext(1), &world);
+        assert_eq!(incognito.glyph, Some(Icon::Application));
+        assert_eq!(incognito.footer_center.expect("context").text, "NEW WINDOW");
+
+        world.recent_applications.push(ApplicationInfo {
+            name: "Ghostty".to_string(),
+            bundle_id: Some("com.mitchellh.ghostty".to_string()),
+            pid: 99,
+        });
+        let recent = view(Tile::ApplicationRecent(0), &world);
+        assert_eq!(recent.value.expect("recent application").text, "GHOSTTY");
     }
 
     #[test]

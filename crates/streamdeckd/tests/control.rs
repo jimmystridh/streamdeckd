@@ -112,14 +112,14 @@ async fn press_runs_the_key_short_action() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn pressing_a_blank_key_is_refused_with_an_explanation() {
-    let mut harness = Harness::new(PageId::Home).await;
+    let mut harness = Harness::new(PageId::Dashboard).await;
     let (path, _directory) = serve(&harness).await;
 
     let response = ask(
         &mut harness,
         &path,
         Request::Press {
-            position: KeyPosition::new(2, 1),
+            position: KeyPosition::new(3, 5),
         },
     )
     .await;

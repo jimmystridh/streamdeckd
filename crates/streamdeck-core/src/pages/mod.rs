@@ -27,6 +27,8 @@ pub enum Action {
     Audio(AudioCommand),
     Spotify(SpotifyCommand),
     Media(MediaCommand),
+    Application(ApplicationCommand),
+    Dashboard(DashboardCommand),
     Wispr(WisprCommand),
     OpenGitHubMetric(MetricKind),
     /// Open the URL behind authored-pull-request tile `index`.
@@ -91,9 +93,35 @@ pub enum MediaCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationCommand {
+    Activate,
+    Hide,
+    Quit,
+    ForceQuit,
+    Context(usize),
+    Recent(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WisprCommand {
     ToggleHandsFree,
     SelectMicrophone(usize),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CaptureDestination {
+    Personal,
+    Work,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DashboardCommand {
+    QuickCapture(CaptureDestination),
+    OpenCiRun,
+    OpenDepartureBoard(usize),
+    OpenActivityMonitor,
+    OpenVpn,
+    OpenNetworkSettings,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +138,8 @@ pub enum Tile {
     Blank,
     /// Navigation key back to Home.
     HomeButton,
+    DashboardButton,
+    QuickCapture,
     MixerSummary,
     CodexFiveHour,
     ClaudeFiveHour,
@@ -117,12 +147,20 @@ pub enum Tile {
     CodexUsage,
     SpotifyGlance,
     MediaGlance,
+    CurrentApplication,
+    ApplicationControl(ApplicationCommand),
+    ApplicationContext(usize),
+    ApplicationRecent(usize),
     WisprGlance,
     WisprPickerHeader,
     WisprMicrophone(usize),
     MediaControl(MediaCommand),
     MediaSource,
     GitHubSummary,
+    CiRadar,
+    MacHealth,
+    NetworkVpn,
+    DepartureBoard(usize),
     PomodoroGlance,
     Meeting(usize),
     WeatherCurrent,
@@ -215,6 +253,8 @@ pub fn page(id: PageId) -> Page {
         PageId::Weather => weather(),
         PageId::Media => media(),
         PageId::Wispr => wispr(),
+        PageId::Application => application(),
+        PageId::Dashboard => dashboard(),
     };
     Page { id, keys }
 }
@@ -263,7 +303,16 @@ fn home() -> Vec<KeyBinding> {
             Tile::ClaudeSevenDay,
             Refresh(IntegrationId::ClaudeUsage),
         ),
-        KeyBinding::new(2, 2, Tile::GitHubSummary, Navigate(PageId::GitHub)),
+        KeyBinding::new(2, 1, Tile::DashboardButton, Navigate(PageId::Dashboard)),
+        KeyBinding::new(
+            2,
+            2,
+            Tile::QuickCapture,
+            Dashboard(DashboardCommand::QuickCapture(CaptureDestination::Personal)),
+        )
+        .with_long(Dashboard(DashboardCommand::QuickCapture(
+            CaptureDestination::Work,
+        ))),
         KeyBinding::new(
             2,
             3,
@@ -273,7 +322,12 @@ fn home() -> Vec<KeyBinding> {
         .with_long(Navigate(PageId::Pomodoro)),
         KeyBinding::new(2, 4, Tile::Meeting(0), OpenMeeting(0)),
         KeyBinding::new(2, 5, Tile::Meeting(1), OpenMeeting(1)),
-        KeyBinding::new(3, 1, Tile::MixerSummary, Navigate(PageId::Mixer)),
+        KeyBinding::new(
+            3,
+            1,
+            Tile::CurrentApplication,
+            Navigate(PageId::Application),
+        ),
         KeyBinding::new(
             3,
             2,
@@ -283,8 +337,40 @@ fn home() -> Vec<KeyBinding> {
         .with_long(Navigate(PageId::Spotify)),
         KeyBinding::new(3, 3, Tile::MediaGlance, Media(MediaCommand::PlayPause))
             .with_long(Navigate(PageId::Media)),
-        // 3,4 is intentionally blank.
+        KeyBinding::new(3, 4, Tile::MixerSummary, Navigate(PageId::Mixer)),
         KeyBinding::new(3, 5, Tile::WeatherGlance, Navigate(PageId::Weather)),
+    ]
+}
+
+fn dashboard() -> Vec<KeyBinding> {
+    use Action::*;
+    vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(1, 2, Tile::GitHubSummary, Navigate(PageId::GitHub)),
+        KeyBinding::new(1, 3, Tile::CiRadar, Dashboard(DashboardCommand::OpenCiRun))
+            .with_long(Refresh(IntegrationId::CiRadar)),
+        KeyBinding::new(
+            1,
+            4,
+            Tile::MacHealth,
+            Dashboard(DashboardCommand::OpenActivityMonitor),
+        ),
+        KeyBinding::new(1, 5, Tile::NetworkVpn, Dashboard(DashboardCommand::OpenVpn))
+            .with_long(Dashboard(DashboardCommand::OpenNetworkSettings)),
+        KeyBinding::new(
+            2,
+            1,
+            Tile::DepartureBoard(0),
+            Dashboard(DashboardCommand::OpenDepartureBoard(0)),
+        )
+        .with_long(Refresh(IntegrationId::Departures)),
+        KeyBinding::new(
+            2,
+            2,
+            Tile::DepartureBoard(1),
+            Dashboard(DashboardCommand::OpenDepartureBoard(1)),
+        )
+        .with_long(Refresh(IntegrationId::Departures)),
     ]
 }
 
@@ -776,19 +862,119 @@ fn wispr() -> Vec<KeyBinding> {
     ]
 }
 
+fn application() -> Vec<KeyBinding> {
+    use Action::*;
+    vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(
+            1,
+            2,
+            Tile::ApplicationControl(ApplicationCommand::Activate),
+            Application(ApplicationCommand::Activate),
+        ),
+        KeyBinding::new(
+            1,
+            3,
+            Tile::ApplicationControl(ApplicationCommand::Hide),
+            Application(ApplicationCommand::Hide),
+        ),
+        KeyBinding::new(
+            1,
+            4,
+            Tile::ApplicationControl(ApplicationCommand::Quit),
+            Acknowledge,
+        )
+        .with_long(Application(ApplicationCommand::Quit)),
+        KeyBinding::new(
+            1,
+            5,
+            Tile::ApplicationControl(ApplicationCommand::ForceQuit),
+            Acknowledge,
+        )
+        .with_long(Application(ApplicationCommand::ForceQuit)),
+        KeyBinding::new(
+            2,
+            1,
+            Tile::ApplicationContext(0),
+            Application(ApplicationCommand::Context(0)),
+        ),
+        KeyBinding::new(
+            2,
+            2,
+            Tile::ApplicationContext(1),
+            Application(ApplicationCommand::Context(1)),
+        ),
+        KeyBinding::new(
+            2,
+            3,
+            Tile::ApplicationContext(2),
+            Application(ApplicationCommand::Context(2)),
+        ),
+        KeyBinding::new(
+            2,
+            4,
+            Tile::ApplicationContext(3),
+            Application(ApplicationCommand::Context(3)),
+        ),
+        KeyBinding::new(
+            2,
+            5,
+            Tile::ApplicationContext(4),
+            Application(ApplicationCommand::Context(4)),
+        ),
+        KeyBinding::new(
+            3,
+            1,
+            Tile::ApplicationRecent(0),
+            Application(ApplicationCommand::Recent(0)),
+        ),
+        KeyBinding::new(
+            3,
+            2,
+            Tile::ApplicationRecent(1),
+            Application(ApplicationCommand::Recent(1)),
+        ),
+        KeyBinding::new(
+            3,
+            3,
+            Tile::ApplicationRecent(2),
+            Application(ApplicationCommand::Recent(2)),
+        ),
+        KeyBinding::new(
+            3,
+            4,
+            Tile::ApplicationRecent(3),
+            Application(ApplicationCommand::Recent(3)),
+        ),
+        KeyBinding::new(
+            3,
+            5,
+            Tile::ApplicationRecent(4),
+            Application(ApplicationCommand::Recent(4)),
+        ),
+    ]
+}
+
 /// Integrations a page needs while it is visible. Drives visibility-gated refresh
 /// so nothing polls for a key nobody can see.
 pub fn required_integrations(id: PageId) -> Vec<IntegrationId> {
     match id {
         PageId::Home => vec![
+            IntegrationId::FrontmostApplication,
             IntegrationId::AudioStatus,
             IntegrationId::Meetings,
             IntegrationId::Weather,
             IntegrationId::LakeCurrent,
-            IntegrationId::GitHub,
             IntegrationId::ClaudeUsage,
             IntegrationId::CodexUsage,
             IntegrationId::Spotify,
+        ],
+        PageId::Dashboard => vec![
+            IntegrationId::GitHub,
+            IntegrationId::CiRadar,
+            IntegrationId::MacHealth,
+            IntegrationId::NetworkStatus,
+            IntegrationId::Departures,
         ],
         // The audio snapshot already contains both status and device inventory.
         PageId::Mixer => vec![IntegrationId::AudioStatus],
@@ -803,6 +989,13 @@ pub fn required_integrations(id: PageId) -> Vec<IntegrationId> {
         ],
         PageId::Media => vec![IntegrationId::MediaSession, IntegrationId::AudioStatus],
         PageId::Wispr => Vec::new(),
+        PageId::Application => vec![
+            IntegrationId::FrontmostApplication,
+            IntegrationId::AudioStatus,
+            IntegrationId::MediaSession,
+            IntegrationId::Meetings,
+            IntegrationId::Spotify,
+        ],
     }
 }
 
@@ -854,16 +1047,77 @@ mod tests {
         assert_eq!(tile(1, 3), Some(Tile::CodexUsage));
         assert_eq!(tile(1, 4), Some(Tile::ClaudeFiveHour));
         assert_eq!(tile(1, 5), Some(Tile::ClaudeSevenDay));
-        assert_eq!(tile(2, 1), None, "2,1 is intentionally blank");
-        assert_eq!(tile(2, 2), Some(Tile::GitHubSummary));
+        assert_eq!(tile(2, 1), Some(Tile::DashboardButton));
+        assert_eq!(tile(2, 2), Some(Tile::QuickCapture));
         assert_eq!(tile(2, 3), Some(Tile::PomodoroGlance));
         assert_eq!(tile(2, 4), Some(Tile::Meeting(0)));
         assert_eq!(tile(2, 5), Some(Tile::Meeting(1)));
-        assert_eq!(tile(3, 1), Some(Tile::MixerSummary));
+        assert_eq!(tile(3, 1), Some(Tile::CurrentApplication));
         assert_eq!(tile(3, 2), Some(Tile::SpotifyGlance));
         assert_eq!(tile(3, 3), Some(Tile::MediaGlance));
-        assert_eq!(tile(3, 4), None, "3,4 is intentionally blank");
+        assert_eq!(tile(3, 4), Some(Tile::MixerSummary));
         assert_eq!(tile(3, 5), Some(Tile::WeatherGlance));
+    }
+
+    #[test]
+    fn dashboard_spreads_status_and_departures_across_the_second_screen() {
+        let page = page(PageId::Dashboard);
+        let tile = |row, column| {
+            page.binding(KeyPosition::new(row, column))
+                .map(|key| key.tile)
+        };
+
+        assert_eq!(tile(1, 1), Some(Tile::HomeButton));
+        assert_eq!(tile(1, 2), Some(Tile::GitHubSummary));
+        assert_eq!(tile(1, 3), Some(Tile::CiRadar));
+        assert_eq!(tile(1, 4), Some(Tile::MacHealth));
+        assert_eq!(tile(1, 5), Some(Tile::NetworkVpn));
+        assert_eq!(tile(2, 1), Some(Tile::DepartureBoard(0)));
+        assert_eq!(tile(2, 2), Some(Tile::DepartureBoard(1)));
+        assert_eq!(tile(3, 1), None);
+    }
+
+    #[test]
+    fn current_application_opens_from_tile_eleven_and_has_safe_controls() {
+        let home = page(PageId::Home);
+        assert_eq!(
+            home.binding(KeyPosition::new(3, 1))
+                .expect("current application")
+                .short,
+            Action::Navigate(PageId::Application)
+        );
+
+        let page = page(PageId::Application);
+        assert_eq!(
+            page.binding(KeyPosition::new(1, 3)).expect("hide").short,
+            Action::Application(ApplicationCommand::Hide)
+        );
+        let quit = page.binding(KeyPosition::new(1, 4)).expect("quit");
+        assert_eq!(quit.short, Action::Acknowledge);
+        assert_eq!(
+            quit.long,
+            Some(Action::Application(ApplicationCommand::Quit))
+        );
+        let force_quit = page.binding(KeyPosition::new(1, 5)).expect("force quit");
+        assert_eq!(force_quit.short, Action::Acknowledge);
+        assert_eq!(
+            force_quit.long,
+            Some(Action::Application(ApplicationCommand::ForceQuit))
+        );
+        for (column, slot) in (1..=5).zip(0..5) {
+            assert_eq!(
+                page.binding(KeyPosition::new(2, column))
+                    .expect("context action")
+                    .short,
+                Action::Application(ApplicationCommand::Context(slot))
+            );
+            assert_eq!(
+                page.binding(KeyPosition::new(3, column))
+                    .expect("recent application")
+                    .short,
+                Action::Application(ApplicationCommand::Recent(slot))
+            );
+        }
     }
 
     #[test]
@@ -1185,12 +1439,19 @@ mod tests {
             with_long,
             vec![
                 (PageId::Home, KeyPosition::new(1, 1)),
+                (PageId::Home, KeyPosition::new(2, 2)),
                 (PageId::Home, KeyPosition::new(2, 3)),
                 (PageId::Home, KeyPosition::new(3, 2)),
                 (PageId::Home, KeyPosition::new(3, 3)),
                 (PageId::Pomodoro, KeyPosition::new(3, 1)),
                 (PageId::Pomodoro, KeyPosition::new(3, 2)),
                 (PageId::Pomodoro, KeyPosition::new(3, 3)),
+                (PageId::Application, KeyPosition::new(1, 4)),
+                (PageId::Application, KeyPosition::new(1, 5)),
+                (PageId::Dashboard, KeyPosition::new(1, 3)),
+                (PageId::Dashboard, KeyPosition::new(1, 5)),
+                (PageId::Dashboard, KeyPosition::new(2, 1)),
+                (PageId::Dashboard, KeyPosition::new(2, 2)),
             ]
         );
     }

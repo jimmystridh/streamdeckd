@@ -146,6 +146,83 @@ pub fn layers(icon: Icon) -> Vec<Layer> {
             ])),
             Layer::fill(rect(0.42, 0.58, 0.16, 0.26)).faded(0.35),
         ],
+        Icon::Dashboard => vec![
+            Layer::fill(rounded_rect(0.12, 0.12, 0.32, 0.32, 0.06)),
+            Layer::fill(rounded_rect(0.56, 0.12, 0.32, 0.32, 0.06)),
+            Layer::fill(rounded_rect(0.12, 0.56, 0.32, 0.32, 0.06)),
+            Layer::fill(rounded_rect(0.56, 0.56, 0.32, 0.32, 0.06)),
+        ],
+        Icon::Capture => vec![
+            Layer::stroke(rounded_rect(0.16, 0.1, 0.62, 0.76, 0.06), 0.07),
+            Layer::stroke(polyline(&[(0.28, 0.3), (0.62, 0.3)]), 0.06).faded(0.7),
+            Layer::stroke(polyline(&[(0.28, 0.46), (0.54, 0.46)]), 0.06).faded(0.7),
+            Layer::stroke(polyline(&[(0.48, 0.76), (0.84, 0.4)]), 0.12),
+            Layer::fill(polygon(&[(0.43, 0.82), (0.5, 0.68), (0.57, 0.75)])),
+        ],
+        Icon::Application => vec![
+            Layer::fill(rounded_rect(0.1, 0.16, 0.8, 0.68, 0.09)),
+            Layer::fill(rect(0.1, 0.3, 0.8, 0.08))
+                .tinted(Color::hex(0x0f172a))
+                .faded(0.38),
+            Layer::fill(circle(0.22, 0.23, 0.035))
+                .tinted(Color::hex(0x0f172a))
+                .faded(0.55),
+            Layer::fill(circle(0.32, 0.23, 0.035))
+                .tinted(Color::hex(0x0f172a))
+                .faded(0.55),
+        ],
+        Icon::Search => vec![
+            Layer::stroke(circle(0.43, 0.42, 0.25), 0.1),
+            Layer::stroke(polyline(&[(0.61, 0.61), (0.84, 0.84)]), 0.12),
+        ],
+        Icon::Message => vec![
+            Layer::fill(rounded_rect(0.12, 0.16, 0.76, 0.58, 0.1)),
+            Layer::fill(polygon(&[(0.28, 0.68), (0.2, 0.9), (0.48, 0.72)])),
+            Layer::fill(circle(0.32, 0.44, 0.04))
+                .tinted(Color::hex(0x0f172a))
+                .faded(0.5),
+            Layer::fill(circle(0.5, 0.44, 0.04))
+                .tinted(Color::hex(0x0f172a))
+                .faded(0.5),
+            Layer::fill(circle(0.68, 0.44, 0.04))
+                .tinted(Color::hex(0x0f172a))
+                .faded(0.5),
+        ],
+        Icon::Thread => vec![
+            Layer::fill(rounded_rect(0.08, 0.12, 0.6, 0.42, 0.08)),
+            Layer::fill(polygon(&[(0.2, 0.5), (0.16, 0.68), (0.38, 0.52)])),
+            Layer::fill(rounded_rect(0.34, 0.48, 0.58, 0.38, 0.08)).faded(0.78),
+            Layer::fill(polygon(&[(0.7, 0.82), (0.82, 0.94), (0.82, 0.78)])).faded(0.78),
+        ],
+        Icon::Activity => vec![
+            Layer::fill(polygon(&[
+                (0.24, 0.7),
+                (0.3, 0.62),
+                (0.3, 0.4),
+                (0.36, 0.24),
+                (0.5, 0.16),
+                (0.64, 0.24),
+                (0.7, 0.4),
+                (0.7, 0.62),
+                (0.76, 0.7),
+            ])),
+            Layer::fill(rect(0.2, 0.7, 0.6, 0.1)),
+            Layer::fill(circle(0.5, 0.85, 0.08)),
+        ],
+        Icon::Network => vec![
+            Layer::stroke(polyline(&[(0.22, 0.72), (0.5, 0.32), (0.78, 0.72)]), 0.09),
+            Layer::fill(circle(0.5, 0.24, 0.13)),
+            Layer::fill(circle(0.18, 0.78, 0.13)),
+            Layer::fill(circle(0.82, 0.78, 0.13)),
+        ],
+        Icon::Bus => vec![
+            Layer::fill(rounded_rect(0.16, 0.1, 0.68, 0.72, 0.1)),
+            Layer::fill(rounded_rect(0.25, 0.2, 0.5, 0.28, 0.04))
+                .tinted(Color::hex(0x0f172a))
+                .faded(0.45),
+            Layer::fill(circle(0.31, 0.82, 0.1)),
+            Layer::fill(circle(0.69, 0.82, 0.1)),
+        ],
         Icon::Speaker => vec![
             Layer::fill(polygon(&[
                 (0.12, 0.36),
@@ -424,7 +501,7 @@ fn arc_bottom() -> Path {
 mod tests {
     use super::*;
 
-    const ALL: [Icon; 36] = [
+    const ALL: [Icon; 45] = [
         Icon::Play,
         Icon::Pause,
         Icon::PlayPause,
@@ -441,6 +518,15 @@ mod tests {
         Icon::Repeat,
         Icon::RepeatOne,
         Icon::Home,
+        Icon::Dashboard,
+        Icon::Capture,
+        Icon::Application,
+        Icon::Search,
+        Icon::Message,
+        Icon::Thread,
+        Icon::Activity,
+        Icon::Network,
+        Icon::Bus,
         Icon::Speaker,
         Icon::SpeakerMuted,
         Icon::Microphone,

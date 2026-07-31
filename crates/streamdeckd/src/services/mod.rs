@@ -5,11 +5,14 @@
 //! all live in the runtime, so a service has exactly one job and is trivial to
 //! test with a fake command runner or a local HTTP endpoint.
 
+pub mod ci;
 pub mod github;
 pub mod http;
 pub mod lake;
 pub mod meetings;
+pub mod system;
 pub mod usage;
+pub mod vasttrafik;
 pub mod weather;
 
 use std::time::Duration;
@@ -58,6 +61,10 @@ pub mod intervals {
     /// Default when MET Norway sends no `Expires`.
     pub const WEATHER: Duration = Duration::from_secs(30 * 60);
     pub const GITHUB: Duration = Duration::from_secs(5 * 60);
+    pub const CI: Duration = Duration::from_secs(5 * 60);
+    pub const MAC_HEALTH: Duration = Duration::from_secs(60);
+    pub const NETWORK: Duration = Duration::from_secs(30);
+    pub const DEPARTURES: Duration = Duration::from_secs(30);
     pub const USAGE: Duration = Duration::from_secs(5 * 60);
     /// On the Spotify page the transport state must track closely.
     pub const SPOTIFY_PAGE: Duration = Duration::from_secs(2);
@@ -68,6 +75,8 @@ pub mod intervals {
     pub const SPOTIFY_GLANCE: Duration = Duration::from_secs(10);
     /// Native MediaRemote lookup while the generic media page is visible.
     pub const MEDIA_SESSION: Duration = Duration::from_secs(5);
+    /// Native NSWorkspace lookup; no subprocess or AppleScript is involved.
+    pub const FRONTMOST_APPLICATION: Duration = Duration::from_secs(1);
     /// How long to wait before retrying after a failure, while stale data shows.
     pub const ERROR_RETRY: Duration = Duration::from_secs(5 * 60);
 }
@@ -79,6 +88,7 @@ pub mod timeouts {
     pub const WEATHER: Duration = Duration::from_secs(10);
     pub const LAKE: Duration = Duration::from_secs(10);
     pub const USAGE: Duration = Duration::from_secs(10);
+    pub const VASTTRAFIK: Duration = Duration::from_secs(10);
 }
 
 /// Turns a duration into the milliseconds the cache policy uses.
@@ -107,10 +117,15 @@ mod tests {
         assert_eq!(intervals::LAKE_HISTORY.as_secs(), 900);
         assert_eq!(intervals::WEATHER.as_secs(), 1800);
         assert_eq!(intervals::GITHUB.as_secs(), 300);
+        assert_eq!(intervals::CI.as_secs(), 300);
+        assert_eq!(intervals::MAC_HEALTH.as_secs(), 60);
+        assert_eq!(intervals::NETWORK.as_secs(), 30);
+        assert_eq!(intervals::DEPARTURES.as_secs(), 30);
         assert_eq!(intervals::USAGE.as_secs(), 300);
         assert_eq!(intervals::SPOTIFY_PAGE.as_secs(), 2);
         assert_eq!(intervals::SPOTIFY_GLANCE.as_secs(), 10);
         assert_eq!(intervals::MEDIA_SESSION.as_secs(), 5);
+        assert_eq!(intervals::FRONTMOST_APPLICATION.as_secs(), 1);
         assert_eq!(intervals::ERROR_RETRY.as_secs(), 300);
     }
 

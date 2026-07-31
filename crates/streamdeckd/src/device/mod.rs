@@ -9,9 +9,16 @@ pub mod hid;
 pub mod preview;
 pub mod recording;
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use streamdeck_core::model::{Grid, KeyPosition};
 use streamdeck_render::RenderedKey;
+use tokio::sync::mpsc;
+
+use crate::runtime::{ReconnectedDevice, RuntimeEvent};
+
+pub const RECONNECT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Debug, thiserror::Error)]
 pub enum DeviceError {
@@ -70,6 +77,98 @@ pub trait DeckDevice: Send + Sync {
     async fn close(&self) -> Result<(), DeviceError>;
 }
 
+/// Owns device input for the daemon's lifetime and replaces a vanished HID
+/// handle when the same deck becomes available again.
+///
+/// Reconnect attempts only run while no device is attached, so a healthy deck
+/// pays no enumeration or polling cost beyond its normal input reader.
+pub async fn supervise<F, Fut>(
+    initial: Option<Arc<dyn DeckDevice>>,
+    sender: mpsc::UnboundedSender<RuntimeEvent>,
+    retry_interval: std::time::Duration,
+    mut reconnect: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Arc<dyn DeckDevice>, DeviceError>>,
+{
+    let mut current = initial;
+
+    loop {
+        if let Some(device) = current.take() {
+            loop {
+                match device.next_event().await {
+                    Ok(Some(event)) => {
+                        if sender.send(RuntimeEvent::Key(event)).is_err() {
+                            let _ = device.close().await;
+                            return;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        tracing::warn!(
+                            component = "device",
+                            error = %error,
+                            "input read failed"
+                        );
+                        break;
+                    }
+                }
+            }
+
+            if sender.send(RuntimeEvent::DeviceDisconnected).is_err() {
+                let _ = device.close().await;
+                return;
+            }
+            let _ = device.close().await;
+        }
+
+        let mut last_error = None;
+        loop {
+            tokio::time::sleep(retry_interval).await;
+            match reconnect().await {
+                Ok(device) => {
+                    let descriptor = device.descriptor();
+                    tracing::info!(
+                        component = "device",
+                        serial = %descriptor.serial,
+                        kind = %descriptor.kind,
+                        "reopened the deck"
+                    );
+                    if sender
+                        .send(RuntimeEvent::DeviceReconnected(ReconnectedDevice(
+                            Arc::clone(&device),
+                        )))
+                        .is_err()
+                    {
+                        let _ = device.close().await;
+                        return;
+                    }
+                    current = Some(device);
+                    break;
+                }
+                Err(error) => {
+                    let message = error.to_string();
+                    if last_error.as_deref() != Some(message.as_str()) {
+                        match error {
+                            DeviceError::NotFound(_) => tracing::debug!(
+                                component = "device",
+                                error = %message,
+                                "waiting for the deck to reconnect"
+                            ),
+                            _ => tracing::warn!(
+                                component = "device",
+                                error = %message,
+                                "could not reopen the deck"
+                            ),
+                        }
+                        last_error = Some(message);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Tracks the last payload sent to each key so an unchanged frame is never
 /// written to USB again.
 #[derive(Debug, Default)]
@@ -114,6 +213,7 @@ impl FrameCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device::recording::{RecordingDeckDevice, Sent};
     use streamdeck_core::view::{Color, KeyView};
     use streamdeck_render::Renderer;
 
@@ -176,5 +276,72 @@ mod tests {
             (1, 0, 900),
             "invalidation keeps the counters"
         );
+    }
+
+    #[tokio::test]
+    async fn the_supervisor_reopens_a_disconnected_device_and_resumes_input() {
+        let (first, first_events) = RecordingDeckDevice::new();
+        let first = Arc::new(first);
+        let (second, second_events) = RecordingDeckDevice::new();
+        let second = Arc::new(second);
+        let replacement = Arc::new(std::sync::Mutex::new(Some(
+            Arc::clone(&second) as Arc<dyn DeckDevice>
+        )));
+        let replacement_for_open = Arc::clone(&replacement);
+        let (sender, mut events) = mpsc::unbounded_channel();
+
+        let supervisor = tokio::spawn(supervise(
+            Some(Arc::clone(&first) as Arc<dyn DeckDevice>),
+            sender,
+            std::time::Duration::from_millis(1),
+            move || {
+                let replacement = Arc::clone(&replacement_for_open);
+                async move {
+                    replacement
+                        .lock()
+                        .expect("replacement lock")
+                        .take()
+                        .ok_or_else(|| DeviceError::NotFound("test deck".to_string()))
+                }
+            },
+        ));
+
+        first_events
+            .send(KeyEvent::Down(KeyPosition::new(1, 2)))
+            .expect("first input");
+        assert!(matches!(
+            receive(&mut events).await,
+            RuntimeEvent::Key(KeyEvent::Down(KeyPosition { row: 1, column: 2 }))
+        ));
+
+        drop(first_events);
+        assert!(matches!(
+            receive(&mut events).await,
+            RuntimeEvent::DeviceDisconnected
+        ));
+        match receive(&mut events).await {
+            RuntimeEvent::DeviceReconnected(device) => {
+                assert_eq!(device.0.descriptor(), second.descriptor());
+            }
+            unexpected => panic!("expected a reconnect, got {unexpected:?}"),
+        }
+        assert!(first.sent().contains(&Sent::Closed));
+
+        second_events
+            .send(KeyEvent::Up(KeyPosition::new(3, 5)))
+            .expect("second input");
+        assert!(matches!(
+            receive(&mut events).await,
+            RuntimeEvent::Key(KeyEvent::Up(KeyPosition { row: 3, column: 5 }))
+        ));
+
+        supervisor.abort();
+    }
+
+    async fn receive(receiver: &mut mpsc::UnboundedReceiver<RuntimeEvent>) -> RuntimeEvent {
+        tokio::time::timeout(std::time::Duration::from_secs(1), receiver.recv())
+            .await
+            .expect("event timed out")
+            .expect("event channel closed")
     }
 }

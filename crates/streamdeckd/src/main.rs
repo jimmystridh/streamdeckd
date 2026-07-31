@@ -7,6 +7,8 @@ use clap::Parser;
 use streamdeck_core::config::Config;
 use streamdeck_core::model::Grid;
 use streamdeck_core::state::StateStore;
+use streamdeck_macos::ambient::AmbientLightSensor;
+use streamdeck_macos::application::SystemApplicationAdapter;
 #[cfg(target_os = "macos")]
 use streamdeck_macos::audio::CoreAudioAdapter;
 use streamdeck_macos::audio::{AudioAdapter, CommandAudioAdapter};
@@ -156,9 +158,14 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
 
     let runner = Arc::new(SystemCommandRunner::new());
     let audio = audio_adapter(&runner, &config);
+    let http = services::http::HttpClient::new()?;
     let services = Services {
         runner: Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
         audio,
+        application: Arc::new(SystemApplicationAdapter::new(
+            Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
+            config.tools.osascript.clone(),
+        )),
         spotify: Arc::new(AppleScriptSpotifyAdapter::new(
             Arc::clone(&runner) as Arc<dyn streamdeck_macos::CommandRunner>,
             config.tools.clone(),
@@ -180,7 +187,8 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
             config.tools.clone(),
             &config.meetings.meet_app,
         )),
-        http: services::http::HttpClient::new()?,
+        http: http.clone(),
+        vasttrafik: services::vasttrafik::Client::new(http),
         helper_path: Some(streamdeck_macos::support_dir().join("bin/streamdeck-alert")),
     };
 
@@ -188,9 +196,11 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     let state =
         runtime::state::RuntimeState::new(Arc::clone(&config), &config_file, store, persistent);
     let screen_locked = streamdeck_macos::session::screen_is_locked();
+    let initial_ambient_lux = read_ambient_light();
     let mut daemon = Runtime::new(state, services, Renderer::new()?, receiver, sender.clone())
         .with_level_control(level)
-        .with_screen_locked(screen_locked);
+        .with_screen_locked(screen_locked)
+        .with_ambient_lux(initial_ambient_lux);
 
     // Claim the control socket before touching any hardware. Binding is what
     // enforces one instance per user, so doing it second would mean a duplicate
@@ -207,66 +217,100 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     tracing::info!(component = "control", path = %socket.path().display(), "listening");
 
     // Open the device. Preview mode never touches the hardware.
-    let device: Arc<dyn DeckDevice> = match &cli.preview {
+    let input = match &cli.preview {
         Some(path) => {
             let (preview, events) = device::preview::PreviewDeckDevice::new(path, Grid::MK2);
             // Nothing sends synthetic presses to the preview; keep the channel open.
             std::mem::forget(events);
             tracing::info!(component = "device", path = %path.display(), "preview mode");
-            Arc::new(preview)
+            let device = Arc::new(preview) as Arc<dyn DeckDevice>;
+            daemon.attach_device(Arc::clone(&device));
+
+            let input_sender = sender.clone();
+            tokio::spawn(async move {
+                loop {
+                    match device.next_event().await {
+                        Ok(Some(event)) => {
+                            if input_sender.send(RuntimeEvent::Key(event)).is_err() {
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            let _ = input_sender.send(RuntimeEvent::DeviceDisconnected);
+                            break;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                component = "device",
+                                error = %error,
+                                "preview input failed"
+                            );
+                            let _ = input_sender.send(RuntimeEvent::DeviceDisconnected);
+                            break;
+                        }
+                    }
+                }
+            })
         }
-        None => match device::hid::HidDeckDevice::open(config.device_serial.as_deref()) {
-            Ok(device) => {
-                let descriptor = device.descriptor();
-                tracing::info!(
-                    component = "device",
-                    serial = %descriptor.serial,
-                    kind = %descriptor.kind,
-                    "opened the deck"
-                );
-                Arc::new(device)
-            }
-            Err(error) => {
-                // Report clearly and exit successfully: retrying cannot help until
-                // the other controller is stopped, and a non-zero exit would make
-                // the LaunchAgent respawn forever.
-                tracing::error!(component = "device", error = %error, "could not open the deck");
-                eprintln!("streamdeckd: {error}");
-                if matches!(error, DeviceError::Busy | DeviceError::NotFound(_)) {
+        None => {
+            let initial = match device::hid::HidDeckDevice::open(config.device_serial.as_deref()) {
+                Ok(device) => {
+                    let device = Arc::new(device) as Arc<dyn DeckDevice>;
+                    let descriptor = device.descriptor();
+                    tracing::info!(
+                        component = "device",
+                        serial = %descriptor.serial,
+                        kind = %descriptor.kind,
+                        "opened the deck"
+                    );
+                    daemon.attach_device(Arc::clone(&device));
+                    Some(device)
+                }
+                Err(DeviceError::NotFound(wanted)) => {
+                    tracing::warn!(
+                        component = "device",
+                        device = %wanted,
+                        "the deck is not connected; waiting for it"
+                    );
+                    None
+                }
+                Err(DeviceError::Busy) => {
+                    tracing::error!(component = "device", "another application owns the deck");
+                    eprintln!("streamdeckd: {}", DeviceError::Busy);
                     eprintln!(
                         "Another application owns the Stream Deck. \
                          Quit Elgato Stream Deck or OpenDeck and try again."
                     );
+                    return Ok(Outcome::DoNotRetry);
                 }
-                return Ok(Outcome::DoNotRetry);
-            }
-        },
-    };
-    daemon.attach_device(Arc::clone(&device));
+                Err(error) => return Err(error.into()),
+            };
 
-    // Input pump: turns device reports into runtime events.
-    let input_device = Arc::clone(&device);
-    let input_sender = sender.clone();
-    let input = tokio::spawn(async move {
-        loop {
-            match input_device.next_event().await {
-                Ok(Some(event)) => {
-                    if input_sender.send(RuntimeEvent::Key(event)).is_err() {
-                        break;
+            let serial = config.device_serial.clone();
+            let input_sender = sender.clone();
+            tokio::spawn(device::supervise(
+                initial,
+                input_sender,
+                device::RECONNECT_RETRY_INTERVAL,
+                move || {
+                    let serial = serial.clone();
+                    async move {
+                        match tokio::task::spawn_blocking(move || {
+                            device::hid::HidDeckDevice::open(serial.as_deref())
+                                .map(|device| Arc::new(device) as Arc<dyn DeckDevice>)
+                        })
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(error) => Err(DeviceError::Other(format!(
+                                "the reconnect task failed: {error}"
+                            ))),
+                        }
                     }
-                }
-                Ok(None) => {
-                    let _ = input_sender.send(RuntimeEvent::DeviceDisconnected);
-                    break;
-                }
-                Err(error) => {
-                    tracing::warn!(component = "device", error = %error, "input read failed");
-                    let _ = input_sender.send(RuntimeEvent::DeviceDisconnected);
-                    break;
-                }
-            }
+                },
+            ))
         }
-    });
+    };
 
     // Start serving on the socket claimed above, now that the runtime can answer.
     let control_sender = sender.clone();
@@ -275,6 +319,7 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     // Configuration watcher: an edit reloads transactionally.
     let watcher = spawn_config_watcher(config_file.clone(), sender.clone());
     let screen_lock_monitor = spawn_screen_lock_monitor(screen_locked, sender.clone());
+    let ambient_light_monitor = spawn_ambient_light_monitor(sender.clone());
 
     // Signals.
     let signal_sender = sender.clone();
@@ -294,6 +339,9 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
 
     daemon.start().await?;
     let result = daemon.run().await;
+    if let Some(monitor) = ambient_light_monitor {
+        monitor.stop();
+    }
     daemon.shutdown().await;
 
     // Cancel every helper task and wait briefly so nothing outlives this process.
@@ -354,6 +402,129 @@ fn spawn_screen_lock_monitor(
             }
         }
     })
+}
+
+const AMBIENT_LIGHT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+const AMBIENT_LIGHT_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+struct AmbientLightMonitor {
+    stop: std::sync::mpsc::SyncSender<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl AmbientLightMonitor {
+    fn stop(mut self) {
+        let _ = self.stop.send(());
+        if let Some(thread) = self.thread.take() {
+            if thread.join().is_err() {
+                tracing::warn!(
+                    component = "ambient-light",
+                    "ambient-light monitor panicked"
+                );
+            }
+        }
+    }
+}
+
+fn read_ambient_light() -> Option<f64> {
+    let sensor = match AmbientLightSensor::open() {
+        Ok(sensor) => sensor,
+        Err(error) => {
+            tracing::info!(
+                component = "ambient-light",
+                error = %error,
+                "automatic brightness is waiting for a sensor"
+            );
+            return None;
+        }
+    };
+    match sensor.lux() {
+        Ok(lux) => Some(lux),
+        Err(error) => {
+            tracing::info!(
+                component = "ambient-light",
+                error = %error,
+                "automatic brightness is waiting for a reading"
+            );
+            None
+        }
+    }
+}
+
+fn spawn_ambient_light_monitor(
+    events: mpsc::UnboundedSender<RuntimeEvent>,
+) -> Option<AmbientLightMonitor> {
+    let (stop, stop_receiver) = std::sync::mpsc::sync_channel(1);
+    let thread = std::thread::Builder::new()
+        .name("streamdeckd-ambient".to_string())
+        .stack_size(256 * 1024)
+        .spawn(move || {
+            let mut sensor = None;
+            let mut last_error = None;
+
+            loop {
+                if sensor.is_none() {
+                    match AmbientLightSensor::open() {
+                        Ok(opened) => {
+                            sensor = Some(opened);
+                            last_error = None;
+                        }
+                        Err(error) => {
+                            log_ambient_error_once(&mut last_error, error.to_string());
+                        }
+                    }
+                }
+
+                if let Some(opened) = sensor.as_ref() {
+                    match opened.lux() {
+                        Ok(lux) => {
+                            last_error = None;
+                            if events.send(RuntimeEvent::AmbientLight(lux)).is_err() {
+                                break;
+                            }
+                        }
+                        Err(error) => {
+                            log_ambient_error_once(&mut last_error, error.to_string());
+                            sensor = None;
+                        }
+                    }
+                }
+
+                let interval = if sensor.is_some() {
+                    AMBIENT_LIGHT_POLL_INTERVAL
+                } else {
+                    AMBIENT_LIGHT_RETRY_INTERVAL
+                };
+                match stop_receiver.recv_timeout(interval) {
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+        })
+        .map_err(|error| {
+            tracing::warn!(
+                component = "ambient-light",
+                error = %error,
+                "could not start ambient-light monitor"
+            );
+        })
+        .ok()?;
+
+    Some(AmbientLightMonitor {
+        stop,
+        thread: Some(thread),
+    })
+}
+
+fn log_ambient_error_once(last_error: &mut Option<String>, error: String) {
+    if last_error.as_deref() != Some(&error) {
+        tracing::warn!(
+            component = "ambient-light",
+            error,
+            "ambient-light reading unavailable; retrying"
+        );
+        *last_error = Some(error);
+    }
 }
 
 /// Watches the configuration file and asks the runtime to reload on change.
