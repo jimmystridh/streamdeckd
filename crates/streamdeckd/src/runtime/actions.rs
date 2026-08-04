@@ -6,7 +6,9 @@
 
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Datelike, Timelike, Utc, Weekday};
+use chrono_tz::Tz;
+use streamdeck_core::config::QuickCaptureConfig;
 use streamdeck_core::integrations::application::{
     ApplicationInfo, ContextAction, CustomApplicationAction,
 };
@@ -43,6 +45,24 @@ use crate::services::{self, http::HttpClient, Refreshed};
 /// How long a pressed weather tile shows its expanded reading, matching the
 /// previous plugin's behaviour.
 pub const WEATHER_DETAIL_MS: u64 = 6_000;
+
+fn quick_capture_vault<'a>(
+    destination: CaptureDestination,
+    config: &'a QuickCaptureConfig,
+    local_now: &DateTime<Tz>,
+) -> &'a str {
+    let weekday = matches!(
+        local_now.weekday(),
+        Weekday::Mon | Weekday::Tue | Weekday::Wed | Weekday::Thu | Weekday::Fri
+    );
+    let automatic_work_time = weekday && (6..18).contains(&local_now.hour());
+
+    match destination {
+        CaptureDestination::Automatic if automatic_work_time => &config.work_vault,
+        CaptureDestination::Automatic | CaptureDestination::Personal => &config.personal_vault,
+        CaptureDestination::Work => &config.work_vault,
+    }
+}
 
 /// Something the coordinator must do after applying an action.
 #[derive(Debug, Default)]
@@ -520,12 +540,9 @@ pub fn spawn(
                 None => outcome.error = Some(format!("no meeting at position {index}")),
             },
             Task::QuickCapture(destination) => {
-                let vault = match destination {
-                    CaptureDestination::Personal => &quick_capture.personal_vault,
-                    CaptureDestination::Work => &quick_capture.work_vault,
-                };
-                let timestamp = Utc::now()
-                    .with_timezone(&timezone)
+                let local_now = Utc::now().with_timezone(&timezone);
+                let vault = quick_capture_vault(destination, &quick_capture, &local_now);
+                let timestamp = local_now
                     .format("%Y-%m-%d %H-%M-%S Quick Capture")
                     .to_string();
                 let file = format!("{}/{}", quick_capture.folder, timestamp);
@@ -1303,15 +1320,17 @@ mod tests {
     fn dashboard_actions_become_scoped_safe_tasks() {
         let mut state = state();
 
-        let personal = apply(
+        let automatic = apply(
             &mut state,
-            Action::Dashboard(DashboardCommand::QuickCapture(CaptureDestination::Personal)),
+            Action::Dashboard(DashboardCommand::QuickCapture(
+                CaptureDestination::Automatic,
+            )),
             now(),
             1_000,
         );
         assert_eq!(
-            personal.spawn,
-            vec![Task::QuickCapture(CaptureDestination::Personal)]
+            automatic.spawn,
+            vec![Task::QuickCapture(CaptureDestination::Automatic)]
         );
 
         let health = apply(
@@ -1340,6 +1359,41 @@ mod tests {
             board.spawn.as_slice(),
             [Task::OpenUrl(url)] if url == "https://avgangstavla.vasttrafik.se/?source=streamdeckd&board1Gids=9021014002140000&board1Modules=departures&board1Modules=trafficSituations"
         ));
+    }
+
+    #[test]
+    fn automatic_quick_capture_uses_local_weekday_work_hours() {
+        use chrono::TimeZone;
+
+        let config = QuickCaptureConfig::default();
+        let stockholm = chrono_tz::Europe::Stockholm;
+        let local = |year, month, day, hour, minute| {
+            stockholm
+                .with_ymd_and_hms(year, month, day, hour, minute, 0)
+                .single()
+                .expect("unambiguous local time")
+        };
+
+        for time in [
+            local(2026, 7, 27, 6, 0),
+            local(2026, 7, 27, 12, 0),
+            local(2026, 7, 27, 17, 59),
+        ] {
+            assert_eq!(
+                quick_capture_vault(CaptureDestination::Automatic, &config, &time),
+                config.work_vault
+            );
+        }
+        for time in [
+            local(2026, 7, 27, 5, 59),
+            local(2026, 7, 27, 18, 0),
+            local(2026, 8, 1, 12, 0),
+        ] {
+            assert_eq!(
+                quick_capture_vault(CaptureDestination::Automatic, &config, &time),
+                config.personal_vault
+            );
+        }
     }
 
     #[test]

@@ -287,8 +287,8 @@ pub struct QuickCaptureConfig {
 impl Default for QuickCaptureConfig {
     fn default() -> Self {
         Self {
-            personal_vault: "JS-Agent".to_string(),
-            work_vault: "JS-Visma-Agent".to_string(),
+            personal_vault: "JS".to_string(),
+            work_vault: "JS-Visma".to_string(),
             folder: "Inbox".to_string(),
         }
     }
@@ -835,7 +835,8 @@ mod tests {
         assert_eq!(config.spotify.playlists.len(), 5);
         assert_eq!(config.vasttrafik.stops.len(), 2);
         assert_eq!(config.network.vpn_name, "Tailscale");
-        assert_eq!(config.quick_capture.personal_vault, "JS-Agent");
+        assert_eq!(config.quick_capture.personal_vault, "JS");
+        assert_eq!(config.quick_capture.work_vault, "JS-Visma");
         assert!(config
             .ci
             .repositories

@@ -60,8 +60,8 @@ repositories = [
 ]
 
 [quick_capture]
-personal_vault = "JS-Agent"
-work_vault = "JS-Visma-Agent"
+personal_vault = "JS"
+work_vault = "JS-Visma"
 folder = "Inbox"
 
 [network]

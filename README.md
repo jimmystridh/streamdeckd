@@ -50,7 +50,9 @@ preempts a poll or another command and requests zero speed while keeping the
 belt available for the next Start.
 
 **Quick Capture** — tap creates and opens a timestamped note under `Inbox` in the
-personal Obsidian vault; hold does the same in the work vault.
+work Obsidian vault on weekdays from 06:00 up to 18:00, using the configured
+Stockholm timezone; evenings and weekends go to the personal vault. Hold always
+targets the work vault as an explicit override.
 
 **Current Application** — the exact frontmost macOS application, controls to
 bring all of its windows forward or hide it, guarded quit and force-quit

@@ -25,6 +25,16 @@ use streamdeckd::device::recording::Sent;
 use streamdeckd::device::DeviceError;
 use streamdeckd::runtime::RuntimeEvent;
 
+async fn wait_for_command(harness: &Harness, expected: &str) {
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !harness.commands.called_with(expected) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("command containing {expected:?} was not called"));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn starting_paints_every_key_once() {
     let harness = Harness::new(PageId::Home).await;
@@ -45,20 +55,20 @@ async fn starting_paints_every_key_once() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn home_opens_dashboard_and_quick_capture_targets_both_obsidian_vaults() {
+async fn home_opens_dashboard_and_quick_capture_keeps_the_work_override() {
     let mut harness = Harness::new(PageId::Home).await;
 
     harness.commands.reset();
     harness.press(2, 2).await;
-    assert!(harness
-        .commands
-        .called_with("obsidian://new?vault=JS%2DAgent&file=Inbox%2F"));
+    wait_for_command(&harness, "obsidian://new?vault=JS").await;
+    assert!(harness.commands.called_with("obsidian://new?vault=JS"));
 
     harness.commands.reset();
     harness.hold(2, 2).await;
+    wait_for_command(&harness, "obsidian://new?vault=JS%2DVisma&file=Inbox%2F").await;
     assert!(harness
         .commands
-        .called_with("obsidian://new?vault=JS%2DVisma%2DAgent&file=Inbox%2F"));
+        .called_with("obsidian://new?vault=JS%2DVisma&file=Inbox%2F"));
 
     harness.press(2, 1).await;
     assert_eq!(harness.page(), PageId::Dashboard);

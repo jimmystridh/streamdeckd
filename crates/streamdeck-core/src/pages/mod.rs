@@ -112,6 +112,7 @@ pub enum WisprCommand {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CaptureDestination {
+    Automatic,
     Personal,
     Work,
 }
@@ -330,7 +331,9 @@ fn home() -> Vec<KeyBinding> {
             2,
             2,
             Tile::QuickCapture,
-            Dashboard(DashboardCommand::QuickCapture(CaptureDestination::Personal)),
+            Dashboard(DashboardCommand::QuickCapture(
+                CaptureDestination::Automatic,
+            )),
         )
         .with_long(Dashboard(DashboardCommand::QuickCapture(
             CaptureDestination::Work,
