@@ -16,6 +16,7 @@ pub mod media;
 pub mod meetings;
 pub mod spotify;
 pub mod system;
+pub mod walkingpad;
 pub mod weather;
 
 /// Guards against a hostile or broken endpoint returning an unbounded body.

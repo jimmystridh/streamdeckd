@@ -25,6 +25,7 @@ use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::SpotifyStatus;
 use streamdeck_core::integrations::system::{MacHealth, NetworkStatus};
+use streamdeck_core::integrations::walkingpad::WalkingPadState;
 use streamdeck_core::integrations::weather::WeatherSnapshot;
 use streamdeck_core::model::{IntegrationId, PageId, WeatherTile};
 use streamdeck_core::nav::Navigator;
@@ -204,6 +205,9 @@ pub struct RuntimeState {
     pub wispr_hands_free: bool,
     /// The weather tile showing its expanded reading, and when it reverts.
     pub weather_detail: Option<(WeatherTile, u64)>,
+    pub walkingpad: WalkingPadState,
+    pub walkingpad_continuous: bool,
+    pub walkingpad_persist_dirty: bool,
 }
 
 impl RuntimeState {
@@ -241,6 +245,9 @@ impl RuntimeState {
             alert_flashing: false,
             wispr_hands_free: false,
             weather_detail: None,
+            walkingpad: WalkingPadState::default(),
+            walkingpad_continuous: false,
+            walkingpad_persist_dirty: false,
         }
     }
 
@@ -305,6 +312,8 @@ impl RuntimeState {
             media: Feeds::feed(&self.feeds.media),
             application: Feeds::feed(&self.feeds.application),
             recent_applications: self.recent_applications(),
+            walkingpad: self.walkingpad.clone(),
+            walkingpad_daily: self.persistent.walkingpad.clone(),
             weather_detail: self
                 .weather_detail
                 .filter(|(_, until)| now_ms < *until)
@@ -400,6 +409,7 @@ impl RuntimeState {
         }
 
         self.schedule_home_weather_boundary(Utc::now(), now_ms);
+        self.schedule_walkingpad_tick(now_ms);
     }
 
     pub fn schedule_home_weather_boundary(&mut self, now: DateTime<Utc>, now_ms: u64) {
@@ -411,6 +421,36 @@ impl RuntimeState {
         let remaining = (boundary - now).num_milliseconds().max(1) as u64;
         self.deadlines
             .set(DeadlineId::HomeWeatherBoundary, now_ms + remaining);
+    }
+
+    pub fn schedule_walkingpad_midnight(&mut self, now: DateTime<Utc>, now_ms: u64) {
+        let local = now.with_timezone(&self.timezone);
+        let tomorrow = local
+            .date_naive()
+            .checked_add_days(Days::new(1))
+            .expect("the next calendar day is representable");
+        let midnight = self
+            .timezone
+            .with_ymd_and_hms(tomorrow.year(), tomorrow.month(), tomorrow.day(), 0, 0, 0)
+            .single()
+            .expect("local midnight is unambiguous")
+            .with_timezone(&Utc);
+        let remaining = (midnight - now).num_milliseconds().max(1) as u64;
+        self.deadlines
+            .set(DeadlineId::WalkingPadMidnight, now_ms + remaining);
+    }
+
+    pub fn schedule_walkingpad_tick(&mut self, now_ms: u64) {
+        self.deadlines.clear(DeadlineId::WalkingPadTick);
+        if matches!(
+            self.visible_page(),
+            PageId::Dashboard | PageId::WalkingPad | PageId::WalkingPadStats
+        ) {
+            self.deadlines.set(
+                DeadlineId::WalkingPadTick,
+                now_ms + 1_000 - (now_ms % 1_000),
+            );
+        }
     }
 
     /// Schedules the Pomodoro completion and, when a countdown is on screen, the

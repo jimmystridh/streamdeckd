@@ -21,6 +21,7 @@ use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::SpotifyStatus;
 use streamdeck_core::integrations::system::{MacHealth, NetworkStatus};
+use streamdeck_core::integrations::walkingpad::WalkingPadRequest;
 use streamdeck_core::integrations::weather::WeatherSnapshot;
 use streamdeck_core::model::{AudioKind, IntegrationId, PageId};
 use streamdeck_core::pages::{
@@ -53,6 +54,8 @@ pub struct Effects {
     pub persist: Option<Durability>,
     pub invalidate: Vec<IntegrationId>,
     pub spawn: Vec<Task>,
+    pub walkingpad_request: Option<WalkingPadRequest>,
+    pub walkingpad_feedback_changed: bool,
 }
 
 /// Work that has to leave the coordinator's thread.
@@ -188,6 +191,13 @@ pub fn apply(state: &mut RuntimeState, action: Action, now: DateTime<Utc>, now_m
             WisprCommand::SelectMicrophone(index) => {
                 effects.page_changed = state.navigator.go_to(PageId::Home);
                 effects.spawn.push(Task::SelectWisprMicrophone(index));
+            }
+        },
+        Action::WalkingPad(command) => match state.walkingpad.prepare(command, now_wall) {
+            Ok(request) => effects.walkingpad_request = request,
+            Err(message) => {
+                state.walkingpad.reject(command, message);
+                effects.walkingpad_feedback_changed = true;
             }
         },
         Action::OpenMeeting(index) => effects.spawn.push(Task::OpenMeeting(index)),
@@ -846,6 +856,10 @@ pub fn metric_url(snapshot: &GitHubSnapshot, kind: MetricKind) -> String {
 mod tests {
     use super::*;
     use streamdeck_core::config::Config;
+    use streamdeck_core::integrations::walkingpad::{
+        WalkingPadCommand, WalkingPadConnection, WalkingPadCounters, WalkingPadMode,
+        WalkingPadTelemetry,
+    };
     use streamdeck_core::model::PageId;
     use streamdeck_core::pomodoro::{Phase, Status};
     use streamdeck_core::state::{PersistentState, StateStore};
@@ -867,6 +881,18 @@ mod tests {
         DateTime::parse_from_rfc3339("2026-07-24T10:00:00Z")
             .expect("timestamp")
             .with_timezone(&Utc)
+    }
+
+    fn connected_walkingpad(state: &mut RuntimeState, speed_tenths: u8) {
+        state.walkingpad.connection = WalkingPadConnection::Connected;
+        state.walkingpad.telemetry = Some(WalkingPadTelemetry {
+            counters: WalkingPadCounters::default(),
+            speed_tenths,
+            target_speed_tenths: speed_tenths,
+            belt_state: u8::from(speed_tenths > 0),
+            mode: WalkingPadMode::Manual,
+        });
+        state.walkingpad.last_status_at_ms = Some(now().timestamp_millis());
     }
 
     #[test]
@@ -971,6 +997,86 @@ mod tests {
             }]
         );
         assert!(effects.persist.is_none());
+    }
+
+    #[test]
+    fn walkingpad_actions_preserve_exact_tenths_and_only_start_explicitly() {
+        let cases = [
+            (
+                WalkingPadCommand::Increase,
+                30,
+                WalkingPadRequest::SetSpeed(32),
+            ),
+            (
+                WalkingPadCommand::Decrease,
+                30,
+                WalkingPadRequest::SetSpeed(28),
+            ),
+            (
+                WalkingPadCommand::SetSpeed(26),
+                30,
+                WalkingPadRequest::SetSpeed(26),
+            ),
+            (
+                WalkingPadCommand::SetSpeed(30),
+                26,
+                WalkingPadRequest::SetSpeed(30),
+            ),
+            (
+                WalkingPadCommand::SetSpeed(34),
+                30,
+                WalkingPadRequest::SetSpeed(34),
+            ),
+            (
+                WalkingPadCommand::SetSpeed(42),
+                30,
+                WalkingPadRequest::SetSpeed(42),
+            ),
+            (
+                WalkingPadCommand::SetSpeed(45),
+                30,
+                WalkingPadRequest::SetSpeed(45),
+            ),
+            (WalkingPadCommand::Start, 0, WalkingPadRequest::Start),
+        ];
+
+        for (command, current, expected) in cases {
+            let mut state = state();
+            connected_walkingpad(&mut state, current);
+            let effects = apply(&mut state, Action::WalkingPad(command), now(), 1_000);
+            assert_eq!(effects.walkingpad_request, Some(expected), "{command:?}");
+        }
+
+        let mut stopped = state();
+        connected_walkingpad(&mut stopped, 0);
+        let effects = apply(
+            &mut stopped,
+            Action::WalkingPad(WalkingPadCommand::SetSpeed(34)),
+            now(),
+            1_000,
+        );
+        assert_eq!(effects.walkingpad_request, None);
+        assert!(effects.walkingpad_feedback_changed);
+        assert_eq!(
+            stopped.walkingpad.feedback.expect("feedback").message,
+            "START FIRST"
+        );
+    }
+
+    #[test]
+    fn walkingpad_stop_remains_available_when_status_is_stale() {
+        let mut state = state();
+        connected_walkingpad(&mut state, 30);
+        state.walkingpad.last_status_at_ms = Some(0);
+
+        let effects = apply(
+            &mut state,
+            Action::WalkingPad(WalkingPadCommand::Stop),
+            now(),
+            1_000,
+        );
+
+        assert_eq!(effects.walkingpad_request, Some(WalkingPadRequest::Stop));
     }
 
     #[test]

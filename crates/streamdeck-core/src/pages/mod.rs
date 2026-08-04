@@ -9,6 +9,7 @@ pub mod theme;
 pub mod views;
 
 use crate::integrations::github::MetricKind;
+use crate::integrations::walkingpad::WalkingPadCommand;
 use crate::model::{AudioKind, Grid, IntegrationId, KeyPosition, PageId, WeatherTile};
 use crate::pomodoro::Phase;
 
@@ -30,6 +31,7 @@ pub enum Action {
     Application(ApplicationCommand),
     Dashboard(DashboardCommand),
     Wispr(WisprCommand),
+    WalkingPad(WalkingPadCommand),
     OpenGitHubMetric(MetricKind),
     /// Open the URL behind authored-pull-request tile `index`.
     OpenGitHubItem(usize),
@@ -132,6 +134,13 @@ pub enum StatsScope {
     AllTime,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkingPadMetric {
+    Distance,
+    Steps,
+    Elapsed,
+}
+
 /// What a key shows. The renderer resolves this against the current world view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tile {
@@ -161,6 +170,17 @@ pub enum Tile {
     MacHealth,
     NetworkVpn,
     DepartureBoard(usize),
+    WalkingPadGlance,
+    WalkingPadConnection,
+    WalkingPadStart,
+    WalkingPadStop,
+    WalkingPadSpeed,
+    WalkingPadSpeedAdjust(WalkingPadCommand),
+    WalkingPadQuickSpeed(u8),
+    WalkingPadSession(WalkingPadMetric),
+    WalkingPadDaily(WalkingPadMetric),
+    WalkingPadStatsButton,
+    WalkingPadControlsButton,
     PomodoroGlance,
     Meeting(usize),
     WeatherCurrent,
@@ -255,6 +275,8 @@ pub fn page(id: PageId) -> Page {
         PageId::Wispr => wispr(),
         PageId::Application => application(),
         PageId::Dashboard => dashboard(),
+        PageId::WalkingPad => walkingpad(),
+        PageId::WalkingPadStats => walkingpad_stats(),
     };
     Page { id, keys }
 }
@@ -371,6 +393,130 @@ fn dashboard() -> Vec<KeyBinding> {
             Dashboard(DashboardCommand::OpenDepartureBoard(1)),
         )
         .with_long(Refresh(IntegrationId::Departures)),
+        KeyBinding::new(2, 3, Tile::WalkingPadGlance, Navigate(PageId::WalkingPad)),
+    ]
+}
+
+fn walkingpad() -> Vec<KeyBinding> {
+    use Action::*;
+    use WalkingPadCommand::{Decrease, Increase, SetSpeed, Start, Stop};
+    vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(1, 2, Tile::WalkingPadConnection, Acknowledge),
+        KeyBinding::new(1, 3, Tile::WalkingPadStart, WalkingPad(Start)),
+        KeyBinding::new(1, 4, Tile::WalkingPadStop, WalkingPad(Stop)),
+        KeyBinding::new(
+            1,
+            5,
+            Tile::WalkingPadStatsButton,
+            Navigate(PageId::WalkingPadStats),
+        ),
+        KeyBinding::new(
+            2,
+            1,
+            Tile::WalkingPadSpeedAdjust(Decrease),
+            WalkingPad(Decrease),
+        ),
+        KeyBinding::new(2, 2, Tile::WalkingPadSpeed, Acknowledge),
+        KeyBinding::new(
+            2,
+            3,
+            Tile::WalkingPadSpeedAdjust(Increase),
+            WalkingPad(Increase),
+        ),
+        KeyBinding::new(
+            2,
+            4,
+            Tile::WalkingPadSession(WalkingPadMetric::Distance),
+            Acknowledge,
+        ),
+        KeyBinding::new(
+            2,
+            5,
+            Tile::WalkingPadSession(WalkingPadMetric::Elapsed),
+            Acknowledge,
+        ),
+        KeyBinding::new(
+            3,
+            1,
+            Tile::WalkingPadQuickSpeed(26),
+            WalkingPad(SetSpeed(26)),
+        ),
+        KeyBinding::new(
+            3,
+            2,
+            Tile::WalkingPadQuickSpeed(30),
+            WalkingPad(SetSpeed(30)),
+        ),
+        KeyBinding::new(
+            3,
+            3,
+            Tile::WalkingPadQuickSpeed(34),
+            WalkingPad(SetSpeed(34)),
+        ),
+        KeyBinding::new(
+            3,
+            4,
+            Tile::WalkingPadQuickSpeed(42),
+            WalkingPad(SetSpeed(42)),
+        ),
+        KeyBinding::new(
+            3,
+            5,
+            Tile::WalkingPadQuickSpeed(45),
+            WalkingPad(SetSpeed(45)),
+        ),
+    ]
+}
+
+fn walkingpad_stats() -> Vec<KeyBinding> {
+    use Action::*;
+    vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(
+            1,
+            2,
+            Tile::WalkingPadControlsButton,
+            Navigate(PageId::WalkingPad),
+        ),
+        KeyBinding::new(1, 3, Tile::WalkingPadConnection, Acknowledge),
+        KeyBinding::new(1, 4, Tile::WalkingPadSpeed, Acknowledge),
+        KeyBinding::new(
+            2,
+            1,
+            Tile::WalkingPadSession(WalkingPadMetric::Distance),
+            Acknowledge,
+        ),
+        KeyBinding::new(
+            2,
+            2,
+            Tile::WalkingPadSession(WalkingPadMetric::Steps),
+            Acknowledge,
+        ),
+        KeyBinding::new(
+            2,
+            3,
+            Tile::WalkingPadSession(WalkingPadMetric::Elapsed),
+            Acknowledge,
+        ),
+        KeyBinding::new(
+            3,
+            1,
+            Tile::WalkingPadDaily(WalkingPadMetric::Distance),
+            Acknowledge,
+        ),
+        KeyBinding::new(
+            3,
+            2,
+            Tile::WalkingPadDaily(WalkingPadMetric::Steps),
+            Acknowledge,
+        ),
+        KeyBinding::new(
+            3,
+            3,
+            Tile::WalkingPadDaily(WalkingPadMetric::Elapsed),
+            Acknowledge,
+        ),
     ]
 }
 
@@ -996,6 +1142,7 @@ pub fn required_integrations(id: PageId) -> Vec<IntegrationId> {
             IntegrationId::Meetings,
             IntegrationId::Spotify,
         ],
+        PageId::WalkingPad | PageId::WalkingPadStats => Vec::new(),
     }
 }
 
@@ -1074,7 +1221,69 @@ mod tests {
         assert_eq!(tile(1, 5), Some(Tile::NetworkVpn));
         assert_eq!(tile(2, 1), Some(Tile::DepartureBoard(0)));
         assert_eq!(tile(2, 2), Some(Tile::DepartureBoard(1)));
+        assert_eq!(tile(2, 3), Some(Tile::WalkingPadGlance));
         assert_eq!(tile(3, 1), None);
+    }
+
+    #[test]
+    fn walkingpad_controls_map_every_motion_button_exactly() {
+        let page = page(PageId::WalkingPad);
+        let action = |row, column| {
+            page.binding(KeyPosition::new(row, column))
+                .map(|key| key.short)
+        };
+
+        assert_eq!(
+            action(1, 3),
+            Some(Action::WalkingPad(WalkingPadCommand::Start))
+        );
+        assert_eq!(
+            action(1, 4),
+            Some(Action::WalkingPad(WalkingPadCommand::Stop))
+        );
+        assert_eq!(
+            action(2, 1),
+            Some(Action::WalkingPad(WalkingPadCommand::Decrease))
+        );
+        assert_eq!(
+            action(2, 3),
+            Some(Action::WalkingPad(WalkingPadCommand::Increase))
+        );
+        for (column, tenths) in [26, 30, 34, 42, 45].into_iter().enumerate() {
+            assert_eq!(
+                action(3, column as u8 + 1),
+                Some(Action::WalkingPad(WalkingPadCommand::SetSpeed(tenths)))
+            );
+        }
+    }
+
+    #[test]
+    fn walkingpad_pages_expose_all_session_and_daily_telemetry() {
+        let controls = page(PageId::WalkingPad);
+        assert!(controls
+            .keys
+            .iter()
+            .any(|key| key.tile == Tile::WalkingPadConnection));
+        assert!(controls
+            .keys
+            .iter()
+            .any(|key| key.tile == Tile::WalkingPadSpeed));
+
+        let stats = page(PageId::WalkingPadStats);
+        for metric in [
+            WalkingPadMetric::Distance,
+            WalkingPadMetric::Steps,
+            WalkingPadMetric::Elapsed,
+        ] {
+            assert!(stats
+                .keys
+                .iter()
+                .any(|key| key.tile == Tile::WalkingPadSession(metric)));
+            assert!(stats
+                .keys
+                .iter()
+                .any(|key| key.tile == Tile::WalkingPadDaily(metric)));
+        }
     }
 
     #[test]
@@ -1490,5 +1699,7 @@ mod tests {
         );
         assert!(required_integrations(PageId::Weather).contains(&IntegrationId::LakeHistory));
         assert!(!required_integrations(PageId::GitHub).contains(&IntegrationId::Spotify));
+        assert!(required_integrations(PageId::WalkingPad).is_empty());
+        assert!(required_integrations(PageId::WalkingPadStats).is_empty());
     }
 }

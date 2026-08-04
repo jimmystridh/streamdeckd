@@ -14,6 +14,9 @@ use crate::integrations::lake::LakeReading;
 use crate::integrations::media::MediaStatus;
 use crate::integrations::spotify::{PlayerState, SpotifyStatus};
 use crate::integrations::system::{PowerSource, VpnState};
+use crate::integrations::walkingpad::{
+    request_for, WalkingPadCommand, WalkingPadConnection, WalkingPadRequest, WalkingPadTelemetry,
+};
 use crate::integrations::weather::{SymbolFamily, WeatherDay, WeatherSnapshot, WeatherSymbol};
 use crate::model::{AudioKind, WeatherTile};
 use crate::pomodoro::{Phase, Status};
@@ -26,7 +29,7 @@ use crate::text::{
 use crate::view::{Color, Icon, KeyStatus, KeyView, TextRun, Weight};
 
 use super::theme;
-use super::{ApplicationCommand, MediaCommand, SpotifyCommand, StatsScope, Tile};
+use super::{ApplicationCommand, MediaCommand, SpotifyCommand, StatsScope, Tile, WalkingPadMetric};
 use chrono::Timelike;
 
 /// Configuration-derived inputs the tiles need but the world view does not carry.
@@ -88,7 +91,7 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
         Tile::QuickCapture => KeyView::solid(theme::QUICK_CAPTURE)
             .glyph(Icon::Capture)
             .header("QUICK CAPTURE")
-            .footer("TAP PERSONAL · HOLD WORK"),
+            .footer("AUTO · HOLD WORK"),
         Tile::MixerSummary => mixer_summary(world),
         Tile::CodexFiveHour => codex_five_hour(world),
         Tile::ClaudeFiveHour => claude_window(world, false),
@@ -110,6 +113,23 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
         Tile::MacHealth => mac_health(world),
         Tile::NetworkVpn => network_vpn(world),
         Tile::DepartureBoard(index) => departure_board(world, index),
+        Tile::WalkingPadGlance => walkingpad_glance(world),
+        Tile::WalkingPadConnection => walkingpad_connection(world),
+        Tile::WalkingPadStart => walkingpad_start(world),
+        Tile::WalkingPadStop => walkingpad_stop(world),
+        Tile::WalkingPadSpeed => walkingpad_speed(world),
+        Tile::WalkingPadSpeedAdjust(command) => walkingpad_speed_adjust(world, command),
+        Tile::WalkingPadQuickSpeed(tenths) => walkingpad_quick_speed(world, tenths),
+        Tile::WalkingPadSession(metric) => walkingpad_session(world, metric),
+        Tile::WalkingPadDaily(metric) => walkingpad_daily(world, metric),
+        Tile::WalkingPadStatsButton => KeyView::solid(theme::NAVIGATION)
+            .glyph(Icon::Activity)
+            .header("TODAY")
+            .footer("SESSION & TOTALS"),
+        Tile::WalkingPadControlsButton => KeyView::solid(theme::NAVIGATION)
+            .glyph(Icon::WalkingPad)
+            .header("CONTROLS")
+            .footer("WALKINGPAD"),
         Tile::PomodoroGlance => pomodoro_timer(world, "TAP START · HOLD"),
         Tile::Meeting(index) => meeting(world, index),
         Tile::WeatherCurrent => weather_current(world),
@@ -1503,6 +1523,427 @@ pub fn weather_summary(snapshot: &WeatherSnapshot) -> String {
     )
 }
 
+fn walkingpad_glance(world: &WorldView) -> KeyView {
+    let mut view = KeyView::solid(theme::WALKINGPAD)
+        .header("WALKINGPAD")
+        .glyph(Icon::WalkingPad);
+    if let Some(pending) = &world.walkingpad.pending {
+        return match pending.request {
+            WalkingPadRequest::Start => view
+                .value("STARTING", 18.0)
+                .footer("RESUMING TARGET")
+                .status(KeyStatus::Selected),
+            WalkingPadRequest::Stop => view
+                .value("STOPPING", 18.0)
+                .footer("HALT REQUESTED")
+                .status(KeyStatus::Alert),
+            WalkingPadRequest::SetSpeed(tenths) => view
+                .value(format_speed(tenths), 28.0)
+                .subvalue("KM/H")
+                .footer("SETTING SPEED")
+                .status(KeyStatus::Selected),
+        };
+    }
+    if world
+        .walkingpad
+        .has_fresh_status(world.now.timestamp_millis())
+    {
+        if let Some(status) = &world.walkingpad.telemetry {
+            if status.is_moving() {
+                return view
+                    .value(format_speed(status.speed_tenths), 30.0)
+                    .subvalue("KM/H")
+                    .footer(format!(
+                        "TODAY {}",
+                        format_distance(world.walkingpad_daily.distance_hundredths)
+                    ));
+            }
+            return view.value("READY", 22.0).footer("TAP FOR CONTROLS");
+        }
+    }
+    let (label, status) = walkingpad_connection_label(world);
+    view = view.value(label, 17.0).status(status);
+    if let Some(age) = stale_age(world) {
+        view = view.footer(age);
+    }
+    view
+}
+
+fn walkingpad_connection(world: &WorldView) -> KeyView {
+    let (label, status) = walkingpad_connection_label(world);
+    let mut view = KeyView::solid(theme::WALKINGPAD)
+        .header("BELT STATE")
+        .glyph(Icon::WalkingPad)
+        .value(label, 18.0)
+        .status(status);
+
+    if let Some(pending) = &world.walkingpad.pending {
+        view = match pending.request {
+            WalkingPadRequest::Start => view
+                .value("STARTING", 18.0)
+                .footer("RESUMING TARGET")
+                .status(KeyStatus::Selected),
+            WalkingPadRequest::Stop => view
+                .value("STOPPING", 18.0)
+                .footer("HALT REQUESTED")
+                .status(KeyStatus::Alert),
+            WalkingPadRequest::SetSpeed(_) => view.footer("SETTING SPEED"),
+        };
+    } else if let Some(age) = stale_age(world) {
+        view = view.footer(age);
+    } else if let Some(error) = &world.walkingpad.connection_error {
+        view = view.footer(upper_short(error, 20));
+    } else if let Some(status) = &world.walkingpad.telemetry {
+        view = view.footer(match status.mode {
+            crate::integrations::walkingpad::WalkingPadMode::Automatic => "AUTOMATIC MODE",
+            crate::integrations::walkingpad::WalkingPadMode::Manual => "MANUAL MODE",
+            crate::integrations::walkingpad::WalkingPadMode::Standby => "STANDBY MODE",
+        });
+    }
+    view
+}
+
+fn walkingpad_start(world: &WorldView) -> KeyView {
+    let command = WalkingPadCommand::Start;
+    if let Some(error) = walkingpad_feedback(world, command) {
+        return KeyView::solid(theme::ERROR)
+            .glyph(Icon::Cross)
+            .header("START FAILED")
+            .footer(error)
+            .status(KeyStatus::Error);
+    }
+    if world
+        .walkingpad
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.request == WalkingPadRequest::Start)
+    {
+        return KeyView::solid(theme::WALKINGPAD_START)
+            .glyph(Icon::Play)
+            .header("STARTING")
+            .value("RESUME", 22.0)
+            .footer("DEVICE TARGET")
+            .status(KeyStatus::Selected);
+    }
+
+    let fresh = world
+        .walkingpad
+        .has_fresh_status(world.now.timestamp_millis());
+    let stopped = world
+        .walkingpad
+        .telemetry
+        .as_ref()
+        .is_some_and(|status| !status.is_moving());
+    let enabled = fresh && stopped && world.walkingpad.pending.is_none();
+    KeyView::solid(theme::WALKINGPAD_START)
+        .glyph(Icon::Play)
+        .header("START")
+        .value("RESUME", 22.0)
+        .footer(if enabled {
+            "DEVICE TARGET"
+        } else if !fresh {
+            "WAIT FOR STATUS"
+        } else if !stopped {
+            "ALREADY MOVING"
+        } else {
+            "BUSY"
+        })
+        .status(if enabled {
+            KeyStatus::Ok
+        } else {
+            KeyStatus::Disabled
+        })
+}
+
+fn walkingpad_stop(world: &WorldView) -> KeyView {
+    let command = WalkingPadCommand::Stop;
+    if let Some(error) = walkingpad_feedback(world, command) {
+        return KeyView::solid(theme::WALKINGPAD_STOP)
+            .glyph(Icon::Warning)
+            .header("STOP FAILED")
+            .footer(error)
+            .status(KeyStatus::Error);
+    }
+    if world
+        .walkingpad
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.request == WalkingPadRequest::Stop)
+    {
+        return KeyView::solid(theme::WALKINGPAD_STOP)
+            .glyph(Icon::Cross)
+            .header("STOPPING")
+            .footer("HALT REQUESTED")
+            .status(KeyStatus::Alert);
+    }
+    let connected = world.walkingpad.connection == WalkingPadConnection::Connected;
+    KeyView::solid(theme::WALKINGPAD_STOP)
+        .glyph(Icon::Cross)
+        .header("STOP")
+        .value("HALT", 22.0)
+        .footer(if connected {
+            "STAY READY"
+        } else {
+            "DISCONNECTED"
+        })
+        .status(if connected {
+            KeyStatus::Ok
+        } else {
+            KeyStatus::Disabled
+        })
+}
+
+fn walkingpad_speed(world: &WorldView) -> KeyView {
+    let speed = world
+        .walkingpad
+        .telemetry
+        .as_ref()
+        .map(|status| status.speed_tenths);
+    let Some(speed) = speed else {
+        return KeyView::solid(theme::DISABLED)
+            .header("CURRENT SPEED")
+            .value("—", 34.0)
+            .footer("NO STATUS")
+            .status(KeyStatus::Disabled);
+    };
+    let status = if world.walkingpad.pending.is_some() {
+        KeyStatus::Selected
+    } else {
+        walkingpad_telemetry_status(world)
+    };
+    KeyView::solid(theme::WALKINGPAD)
+        .header("CURRENT SPEED")
+        .value(format_speed(speed), 34.0)
+        .subvalue("KM/H")
+        .footer(if speed == 0 { "STOPPED" } else { "LIVE" })
+        .status(status)
+}
+
+fn walkingpad_speed_adjust(world: &WorldView, command: WalkingPadCommand) -> KeyView {
+    let increasing = command == WalkingPadCommand::Increase;
+    if let Some(error) = walkingpad_feedback(world, command) {
+        return KeyView::solid(theme::ERROR)
+            .glyph(Icon::Cross)
+            .header(if increasing { "SPEED UP" } else { "SPEED DOWN" })
+            .footer(error)
+            .status(KeyStatus::Error);
+    }
+    let current = world
+        .walkingpad
+        .telemetry
+        .as_ref()
+        .map(WalkingPadTelemetry::control_speed_tenths);
+    let target = request_for(command, current)
+        .ok()
+        .flatten()
+        .and_then(|request| match request {
+            WalkingPadRequest::SetSpeed(tenths) => Some(tenths),
+            _ => None,
+        });
+    let enabled = world
+        .walkingpad
+        .has_fresh_status(world.now.timestamp_millis())
+        && world.walkingpad.pending.is_none()
+        && target.is_some();
+    KeyView::solid(theme::WALKINGPAD)
+        .glyph(if increasing { Icon::Plus } else { Icon::Minus })
+        .header(if increasing { "SPEED UP" } else { "SPEED DOWN" })
+        .value(if increasing { "+0.2" } else { "−0.2" }, 27.0)
+        .footer(
+            target
+                .map(|tenths| format!("NEXT {} KM/H", format_speed(tenths)))
+                .unwrap_or_else(|| speed_control_hint(world, command)),
+        )
+        .status(if enabled {
+            KeyStatus::Ok
+        } else {
+            KeyStatus::Disabled
+        })
+}
+
+fn walkingpad_quick_speed(world: &WorldView, tenths: u8) -> KeyView {
+    let command = WalkingPadCommand::SetSpeed(tenths);
+    if let Some(error) = walkingpad_feedback(world, command) {
+        return KeyView::solid(theme::ERROR)
+            .glyph(Icon::Cross)
+            .header("SET SPEED")
+            .value(format_speed(tenths), 30.0)
+            .footer(error)
+            .status(KeyStatus::Error);
+    }
+    let selected = world
+        .walkingpad
+        .telemetry
+        .as_ref()
+        .is_some_and(|status| status.target_speed_tenths == tenths);
+    let pending = world
+        .walkingpad
+        .pending
+        .as_ref()
+        .is_some_and(|pending| pending.request == WalkingPadRequest::SetSpeed(tenths));
+    let enabled = world
+        .walkingpad
+        .has_fresh_status(world.now.timestamp_millis())
+        && world
+            .walkingpad
+            .telemetry
+            .as_ref()
+            .is_some_and(|status| status.is_moving())
+        && (world.walkingpad.pending.is_none() || pending);
+    KeyView::solid(if selected || pending {
+        theme::SELECTED
+    } else {
+        theme::WALKINGPAD
+    })
+    .header("SET SPEED")
+    .value(format_speed(tenths), 31.0)
+    .footer(if enabled { "KM/H" } else { "START FIRST" })
+    .status(if pending {
+        KeyStatus::Alert
+    } else if selected {
+        KeyStatus::Selected
+    } else if enabled {
+        KeyStatus::Ok
+    } else {
+        KeyStatus::Disabled
+    })
+}
+
+fn walkingpad_session(world: &WorldView, metric: WalkingPadMetric) -> KeyView {
+    let Some(telemetry) = &world.walkingpad.telemetry else {
+        return KeyView::solid(theme::DISABLED)
+            .header("SESSION")
+            .value("—", 32.0)
+            .footer(metric_label(metric))
+            .status(KeyStatus::Disabled);
+    };
+    let (value, size) = match metric {
+        WalkingPadMetric::Distance => (
+            format_distance(u64::from(telemetry.counters.distance_hundredths)),
+            25.0,
+        ),
+        WalkingPadMetric::Steps => (telemetry.counters.steps.to_string(), 29.0),
+        WalkingPadMetric::Elapsed => (
+            format_elapsed(u64::from(telemetry.counters.elapsed_seconds)),
+            22.0,
+        ),
+    };
+    KeyView::solid(theme::WALKINGPAD)
+        .header("SESSION")
+        .value(value, size)
+        .footer(metric_label(metric))
+        .status(walkingpad_telemetry_status(world))
+}
+
+fn walkingpad_daily(world: &WorldView, metric: WalkingPadMetric) -> KeyView {
+    let totals = &world.walkingpad_daily;
+    let (value, size) = match metric {
+        WalkingPadMetric::Distance => (format_distance(totals.distance_hundredths), 25.0),
+        WalkingPadMetric::Steps => (totals.steps.to_string(), 29.0),
+        WalkingPadMetric::Elapsed => (format_elapsed(totals.elapsed_seconds), 22.0),
+    };
+    KeyView::solid(theme::WALKINGPAD)
+        .header("TODAY")
+        .value(value, size)
+        .footer(metric_label(metric))
+        .status(
+            if world
+                .walkingpad
+                .has_fresh_status(world.now.timestamp_millis())
+            {
+                KeyStatus::Ok
+            } else {
+                KeyStatus::Stale
+            },
+        )
+}
+
+fn walkingpad_connection_label(world: &WorldView) -> (&'static str, KeyStatus) {
+    match world.walkingpad.connection {
+        WalkingPadConnection::Locked => ("LOCKED", KeyStatus::Error),
+        WalkingPadConnection::Connecting => ("CONNECTING", KeyStatus::Loading),
+        WalkingPadConnection::Disconnected => ("DISCONNECTED", KeyStatus::Disabled),
+        WalkingPadConnection::Connected
+            if !world
+                .walkingpad
+                .has_fresh_status(world.now.timestamp_millis()) =>
+        {
+            ("STALE", KeyStatus::Stale)
+        }
+        WalkingPadConnection::Connected => match world.walkingpad.telemetry.as_ref() {
+            Some(status) if status.is_moving() => ("WALKING", KeyStatus::Selected),
+            Some(_) => ("READY", KeyStatus::Ok),
+            None => ("CONNECTED", KeyStatus::Loading),
+        },
+    }
+}
+
+fn walkingpad_telemetry_status(world: &WorldView) -> KeyStatus {
+    if world
+        .walkingpad
+        .has_fresh_status(world.now.timestamp_millis())
+    {
+        KeyStatus::Ok
+    } else if world.walkingpad.telemetry.is_some() {
+        KeyStatus::Stale
+    } else {
+        KeyStatus::Disabled
+    }
+}
+
+fn walkingpad_feedback(world: &WorldView, command: WalkingPadCommand) -> Option<String> {
+    world.walkingpad.feedback.as_ref().and_then(|feedback| {
+        (feedback.source == command).then(|| upper_short(&feedback.message, 20))
+    })
+}
+
+fn stale_age(world: &WorldView) -> Option<String> {
+    let age = world
+        .walkingpad
+        .status_age_ms(world.now.timestamp_millis())?;
+    (age > crate::integrations::walkingpad::STATUS_STALE_AFTER_MS)
+        .then(|| format!("STALE {}S", (age + 999) / 1_000))
+}
+
+fn speed_control_hint(world: &WorldView, command: WalkingPadCommand) -> String {
+    let speed = world
+        .walkingpad
+        .telemetry
+        .as_ref()
+        .map(|status| status.speed_tenths);
+    match (command, speed) {
+        (_, Some(0)) => "START FIRST".to_string(),
+        (WalkingPadCommand::Decrease, Some(5)) => "MIN 0.5 KM/H".to_string(),
+        (WalkingPadCommand::Increase, Some(60)) => "MAX 6.0 KM/H".to_string(),
+        _ => "WAIT FOR STATUS".to_string(),
+    }
+}
+
+fn metric_label(metric: WalkingPadMetric) -> &'static str {
+    match metric {
+        WalkingPadMetric::Distance => "DISTANCE",
+        WalkingPadMetric::Steps => "STEPS",
+        WalkingPadMetric::Elapsed => "WALKING TIME",
+    }
+}
+
+fn format_speed(tenths: u8) -> String {
+    format!("{}.{:01}", tenths / 10, tenths % 10)
+}
+
+fn format_distance(hundredths: u64) -> String {
+    format!("{}.{:02} KM", hundredths / 100, hundredths % 100)
+}
+
+fn format_elapsed(seconds: u64) -> String {
+    format!(
+        "{:02}:{:02}:{:02}",
+        seconds / 3_600,
+        (seconds / 60) % 60,
+        seconds % 60
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1514,6 +1955,10 @@ mod tests {
     use crate::integrations::github::{parse_search, GitHubSnapshot};
     use crate::integrations::lake::{parse_history, LakeHistory};
     use crate::integrations::meetings::Meeting;
+    use crate::integrations::walkingpad::{
+        WalkingPadCounters, WalkingPadDailyTotals, WalkingPadMode, WalkingPadState,
+        WalkingPadTelemetry,
+    };
     use crate::integrations::weather::parse_forecast;
     use crate::pomodoro::{self, PomodoroState};
     use chrono::{DateTime, Utc};
@@ -2520,6 +2965,124 @@ mod tests {
                 .expect("footer")
                 .text,
             "52 FOCUS HOURS"
+        );
+    }
+
+    #[test]
+    fn walkingpad_tiles_distinguish_connected_stale_and_disconnected_state() {
+        let mut world = world();
+        world.walkingpad = WalkingPadState {
+            connection: WalkingPadConnection::Connected,
+            telemetry: Some(WalkingPadTelemetry {
+                counters: WalkingPadCounters {
+                    distance_hundredths: 152,
+                    steps: 2_345,
+                    elapsed_seconds: 3_661,
+                },
+                speed_tenths: 34,
+                target_speed_tenths: 34,
+                belt_state: 1,
+                mode: WalkingPadMode::Manual,
+            }),
+            last_status_at_ms: Some(world.now.timestamp_millis()),
+            ..WalkingPadState::default()
+        };
+
+        let connected = view(Tile::WalkingPadConnection, &world);
+        assert_eq!(connected.value.expect("state").text, "WALKING");
+        assert_eq!(connected.status, KeyStatus::Selected);
+        assert_eq!(
+            view(Tile::WalkingPadSpeed, &world)
+                .value
+                .expect("speed")
+                .text,
+            "3.4"
+        );
+        assert_eq!(
+            view(Tile::WalkingPadQuickSpeed(34), &world).status,
+            KeyStatus::Selected
+        );
+
+        world.walkingpad.last_status_at_ms = Some(world.now.timestamp_millis() - 5_000);
+        let stale = view(Tile::WalkingPadConnection, &world);
+        assert_eq!(stale.value.expect("state").text, "STALE");
+        assert_eq!(stale.status, KeyStatus::Stale);
+        assert_eq!(
+            view(
+                Tile::WalkingPadSpeedAdjust(WalkingPadCommand::Increase),
+                &world,
+            )
+            .status,
+            KeyStatus::Disabled
+        );
+
+        world.walkingpad.connection = WalkingPadConnection::Disconnected;
+        let disconnected = view(Tile::WalkingPadConnection, &world);
+        assert_eq!(disconnected.value.expect("state").text, "DISCONNECTED");
+        assert_eq!(disconnected.status, KeyStatus::Disabled);
+    }
+
+    #[test]
+    fn walkingpad_metrics_use_exact_requested_formats() {
+        let mut world = world();
+        world.walkingpad = WalkingPadState {
+            connection: WalkingPadConnection::Connected,
+            telemetry: Some(WalkingPadTelemetry {
+                counters: WalkingPadCounters {
+                    distance_hundredths: 152,
+                    steps: 2_345,
+                    elapsed_seconds: 3_661,
+                },
+                speed_tenths: 34,
+                target_speed_tenths: 34,
+                belt_state: 1,
+                mode: WalkingPadMode::Manual,
+            }),
+            last_status_at_ms: Some(world.now.timestamp_millis()),
+            ..WalkingPadState::default()
+        };
+        world.walkingpad_daily = WalkingPadDailyTotals {
+            date: "2026-07-24".to_string(),
+            distance_hundredths: 987,
+            steps: 12_345,
+            elapsed_seconds: 7_322,
+            ..WalkingPadDailyTotals::default()
+        };
+
+        assert_eq!(
+            view(Tile::WalkingPadSession(WalkingPadMetric::Distance), &world,)
+                .value
+                .expect("distance")
+                .text,
+            "1.52 KM"
+        );
+        assert_eq!(
+            view(Tile::WalkingPadSession(WalkingPadMetric::Steps), &world)
+                .value
+                .expect("steps")
+                .text,
+            "2345"
+        );
+        assert_eq!(
+            view(Tile::WalkingPadSession(WalkingPadMetric::Elapsed), &world,)
+                .value
+                .expect("elapsed")
+                .text,
+            "01:01:01"
+        );
+        assert_eq!(
+            view(Tile::WalkingPadDaily(WalkingPadMetric::Distance), &world)
+                .value
+                .expect("distance")
+                .text,
+            "9.87 KM"
+        );
+        assert_eq!(
+            view(Tile::WalkingPadDaily(WalkingPadMetric::Elapsed), &world)
+                .value
+                .expect("elapsed")
+                .text,
+            "02:02:02"
         );
     }
 

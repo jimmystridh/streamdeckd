@@ -103,10 +103,12 @@ pub enum PageId {
     Wispr,
     Application,
     Dashboard,
+    WalkingPad,
+    WalkingPadStats,
 }
 
 impl PageId {
-    pub const ALL: [PageId; 11] = [
+    pub const ALL: [PageId; 13] = [
         PageId::Home,
         PageId::Mixer,
         PageId::GitHub,
@@ -118,6 +120,8 @@ impl PageId {
         PageId::Wispr,
         PageId::Application,
         PageId::Dashboard,
+        PageId::WalkingPad,
+        PageId::WalkingPadStats,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -133,6 +137,8 @@ impl PageId {
             PageId::Wispr => "wispr",
             PageId::Application => "application",
             PageId::Dashboard => "dashboard",
+            PageId::WalkingPad => "walkingpad",
+            PageId::WalkingPadStats => "walkingpad-stats",
         }
     }
 
@@ -149,6 +155,8 @@ impl PageId {
             PageId::Wispr => "Wispr Flow",
             PageId::Application => "Current Application",
             PageId::Dashboard => "Dashboard 2",
+            PageId::WalkingPad => "WalkingPad",
+            PageId::WalkingPadStats => "WalkingPad Today",
         }
     }
 
@@ -165,6 +173,8 @@ impl PageId {
             PageId::Wispr => 8,
             PageId::Application => 9,
             PageId::Dashboard => 10,
+            PageId::WalkingPad => 11,
+            PageId::WalkingPadStats => 12,
         }
     }
 }
@@ -177,7 +187,7 @@ impl fmt::Display for PageId {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error(
-    "unknown page; expected one of home, dashboard, mixer, github, spotify, stensjon, pomodoro, weather, media, wispr, application"
+    "unknown page; expected one of home, dashboard, mixer, github, spotify, stensjon, pomodoro, weather, media, wispr, application, walkingpad, walkingpad-stats"
 )]
 pub struct PageIdParseError;
 
@@ -197,6 +207,8 @@ impl FromStr for PageId {
             "wispr" | "microphone" | "mic" => Ok(PageId::Wispr),
             "application" | "app" | "current-application" => Ok(PageId::Application),
             "dashboard" | "dashboard2" | "home2" | "more" => Ok(PageId::Dashboard),
+            "walkingpad" | "walk" | "treadmill" => Ok(PageId::WalkingPad),
+            "walkingpad-stats" | "walk-stats" | "treadmill-stats" => Ok(PageId::WalkingPadStats),
             _ => Err(PageIdParseError),
         }
     }

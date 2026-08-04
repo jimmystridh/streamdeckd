@@ -21,6 +21,7 @@ use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::parse_status;
 use streamdeck_core::integrations::system::{MacHealth, NetworkStatus, PowerSource, VpnState};
+use streamdeck_core::integrations::walkingpad::WalkingPadRequest;
 use streamdeck_core::integrations::weather::parse_forecast;
 use streamdeck_core::model::PageId;
 use streamdeck_core::state::{PersistentState, StateStore};
@@ -37,6 +38,7 @@ use streamdeckd::device::KeyEvent;
 use streamdeckd::runtime::state::RuntimeState;
 use streamdeckd::runtime::{Runtime, RuntimeEvent, Services};
 use streamdeckd::services::http::HttpClient;
+use streamdeckd::services::walkingpad::WalkingPadCommander;
 use tokio::sync::mpsc;
 
 const MET: &str = include_str!("../../../../tests/fixtures/met-locationforecast.json");
@@ -52,9 +54,28 @@ pub struct Harness {
     pub commands: Arc<FakeCommandRunner>,
     pub application: Arc<FakeApplicationAdapter>,
     pub wispr: Arc<FakeWisprAdapter>,
+    pub walkingpad: Arc<FakeWalkingPadCommander>,
     pub store: StateStore,
     /// Kept alive so the state file's directory outlives the harness.
     _directory: tempfile::TempDir,
+}
+
+#[derive(Default)]
+pub struct FakeWalkingPadCommander {
+    requests: std::sync::Mutex<Vec<WalkingPadRequest>>,
+}
+
+impl FakeWalkingPadCommander {
+    pub fn requests(&self) -> Vec<WalkingPadRequest> {
+        self.requests.lock().unwrap().clone()
+    }
+}
+
+impl WalkingPadCommander for FakeWalkingPadCommander {
+    fn send(&self, request: WalkingPadRequest) -> Result<(), String> {
+        self.requests.lock().unwrap().push(request);
+        Ok(())
+    }
 }
 
 impl Harness {
@@ -75,6 +96,7 @@ impl Harness {
         let runner = Arc::clone(&commands) as Arc<dyn CommandRunner>;
         let wispr = Arc::new(FakeWisprAdapter::default());
         let application = Arc::new(FakeApplicationAdapter::default());
+        let walkingpad = Arc::new(FakeWalkingPadCommander::default());
 
         let http = HttpClient::new().expect("client");
         let services = Services {
@@ -102,6 +124,7 @@ impl Harness {
             )),
             http: http.clone(),
             vasttrafik: streamdeckd::services::vasttrafik::Client::new(http),
+            walkingpad: Arc::clone(&walkingpad) as Arc<dyn WalkingPadCommander>,
             // No helper binary in tests: the deck's alert state stands alone.
             helper_path: None,
         };
@@ -135,6 +158,7 @@ impl Harness {
             commands,
             application,
             wispr,
+            walkingpad,
             store,
             _directory: directory,
         }

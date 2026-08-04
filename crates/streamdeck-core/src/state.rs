@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::integrations::walkingpad::WalkingPadDailyTotals;
 use crate::model::PageId;
 use crate::pomodoro::PomodoroState;
 
@@ -51,6 +52,8 @@ pub struct PersistentState {
     /// Bounded integration caches that make an offline cold start useful.
     #[serde(default)]
     pub cached: CachedIntegrations,
+    #[serde(default)]
+    pub walkingpad: WalkingPadDailyTotals,
 }
 
 impl Default for PersistentState {
@@ -61,6 +64,7 @@ impl Default for PersistentState {
             pomodoro: PomodoroState::default(),
             input_volume_before_mute: 50,
             cached: CachedIntegrations::default(),
+            walkingpad: WalkingPadDailyTotals::default(),
         }
     }
 }
@@ -323,6 +327,7 @@ pub fn import_legacy_pomodoro(global_settings: &serde_json::Value) -> Option<Pom
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::integrations::walkingpad::WalkingPadCounters;
     use crate::pomodoro::{Phase, Status};
 
     fn store() -> (tempfile::TempDir, StateStore) {
@@ -356,6 +361,18 @@ mod tests {
                 ends_at_ms: Some(1_753_300_000_000),
                 completed_focus_sessions: 7,
                 ..PomodoroState::default()
+            },
+            walkingpad: WalkingPadDailyTotals {
+                date: "2026-08-04".to_string(),
+                distance_hundredths: 152,
+                steps: 2_431,
+                elapsed_seconds: 1_807,
+                last_observed: Some(WalkingPadCounters {
+                    distance_hundredths: 45,
+                    steps: 721,
+                    elapsed_seconds: 529,
+                }),
+                last_observed_at_ms: Some(1_785_838_400_000),
             },
             ..PersistentState::default()
         };
@@ -455,6 +472,11 @@ mod tests {
         assert_eq!(state.pomodoro.focus_minutes, 90);
         assert_eq!(state.pomodoro.cycle_focus_sessions, 4);
         assert_eq!(state.input_volume_before_mute, 100);
+        assert_eq!(
+            state.walkingpad,
+            WalkingPadDailyTotals::default(),
+            "pre-WalkingPad version-one state must remain loadable"
+        );
     }
 
     #[test]

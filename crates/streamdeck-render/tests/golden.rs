@@ -23,6 +23,10 @@ use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::{parse_status, SpotifyStatus};
 use streamdeck_core::integrations::system::{MacHealth, NetworkStatus, PowerSource, VpnState};
+use streamdeck_core::integrations::walkingpad::{
+    WalkingPadConnection, WalkingPadCounters, WalkingPadDailyTotals, WalkingPadMode,
+    WalkingPadState, WalkingPadTelemetry,
+};
 use streamdeck_core::integrations::weather::parse_forecast;
 use streamdeck_core::model::{Grid, PageId};
 use streamdeck_core::pages::views::{render, RenderContext};
@@ -289,6 +293,31 @@ fn healthy() -> WorldView {
         },
     ];
 
+    world.walkingpad = WalkingPadState {
+        connection: WalkingPadConnection::Connected,
+        telemetry: Some(WalkingPadTelemetry {
+            counters: WalkingPadCounters {
+                distance_hundredths: 84,
+                steps: 1_327,
+                elapsed_seconds: 1_503,
+            },
+            speed_tenths: 34,
+            target_speed_tenths: 34,
+            belt_state: 1,
+            mode: WalkingPadMode::Manual,
+        }),
+        last_status_at_ms: Some(now().timestamp_millis()),
+        ..WalkingPadState::default()
+    };
+    world.walkingpad_daily = WalkingPadDailyTotals {
+        date: "2026-07-24".to_string(),
+        distance_hundredths: 152,
+        steps: 2_431,
+        elapsed_seconds: 2_708,
+        last_observed: None,
+        last_observed_at_ms: Some(now().timestamp_millis()),
+    };
+
     world.panel_total_seconds = 10;
     world
 }
@@ -413,6 +442,24 @@ fn dashboard_is_healthy() {
     check(
         "dashboard",
         &sheet(&mut renderer, PageId::Dashboard, &healthy()),
+    );
+}
+
+#[test]
+fn walkingpad_controls_are_healthy() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check(
+        "walkingpad",
+        &sheet(&mut renderer, PageId::WalkingPad, &healthy()),
+    );
+}
+
+#[test]
+fn walkingpad_stats_are_healthy() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check(
+        "walkingpad-stats",
+        &sheet(&mut renderer, PageId::WalkingPadStats, &healthy()),
     );
 }
 

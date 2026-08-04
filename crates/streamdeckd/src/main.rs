@@ -156,6 +156,56 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
         }
     };
 
+    let socket = match control::ControlSocket::bind(streamdeck_macos::socket_path()).await {
+        Ok(socket) => socket,
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            eprintln!("streamdeckd: {error}");
+            eprintln!("Stop it with `streamdeckctl stop` before starting another.");
+            return Ok(Outcome::DoNotRetry);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    tracing::info!(component = "control", path = %socket.path().display(), "listening");
+
+    let (sender, receiver) = mpsc::unbounded_channel();
+    let (walkingpad, walkingpad_service): (
+        Arc<dyn services::walkingpad::WalkingPadCommander>,
+        Option<services::walkingpad::WalkingPadService>,
+    ) = if cli.preview.is_some() {
+        let reason = "WalkingPad is disabled in preview mode";
+        let _ = sender.send(RuntimeEvent::WalkingPad(
+            streamdeck_core::integrations::walkingpad::WalkingPadUpdate::Connection {
+                state:
+                    streamdeck_core::integrations::walkingpad::WalkingPadConnection::Disconnected,
+                error: Some(reason.to_string()),
+            },
+        ));
+        (
+            Arc::new(services::walkingpad::UnavailableWalkingPadController::new(
+                reason,
+            )),
+            None,
+        )
+    } else {
+        match services::walkingpad::WalkingPadService::spawn(sender.clone()) {
+            Ok(service) => (service.controller(), Some(service)),
+            Err(error) => {
+                let _ = sender.send(RuntimeEvent::WalkingPad(
+                    streamdeck_core::integrations::walkingpad::WalkingPadUpdate::Connection {
+                        state: streamdeck_core::integrations::walkingpad::WalkingPadConnection::Disconnected,
+                        error: Some(error.clone()),
+                    },
+                ));
+                (
+                    Arc::new(services::walkingpad::UnavailableWalkingPadController::new(
+                        error,
+                    )),
+                    None,
+                )
+            }
+        }
+    };
+
     let runner = Arc::new(SystemCommandRunner::new());
     let audio = audio_adapter(&runner, &config);
     let http = services::http::HttpClient::new()?;
@@ -189,10 +239,10 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
         )),
         http: http.clone(),
         vasttrafik: services::vasttrafik::Client::new(http),
+        walkingpad,
         helper_path: Some(streamdeck_macos::support_dir().join("bin/streamdeck-alert")),
     };
 
-    let (sender, receiver) = mpsc::unbounded_channel();
     let state =
         runtime::state::RuntimeState::new(Arc::clone(&config), &config_file, store, persistent);
     let screen_locked = streamdeck_macos::session::screen_is_locked();
@@ -201,20 +251,6 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
         .with_level_control(level)
         .with_screen_locked(screen_locked)
         .with_ambient_lux(initial_ambient_lux);
-
-    // Claim the control socket before touching any hardware. Binding is what
-    // enforces one instance per user, so doing it second would mean a duplicate
-    // start opened the deck before discovering it had to exit.
-    let socket = match control::ControlSocket::bind(streamdeck_macos::socket_path()).await {
-        Ok(socket) => socket,
-        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
-            eprintln!("streamdeckd: {error}");
-            eprintln!("Stop it with `streamdeckctl stop` before starting another.");
-            return Ok(Outcome::DoNotRetry);
-        }
-        Err(error) => return Err(error.into()),
-    };
-    tracing::info!(component = "control", path = %socket.path().display(), "listening");
 
     // Open the device. Preview mode never touches the hardware.
     let input = match &cli.preview {
@@ -341,6 +377,9 @@ async fn serve(cli: Cli) -> anyhow::Result<Outcome> {
     let result = daemon.run().await;
     if let Some(monitor) = ambient_light_monitor {
         monitor.stop();
+    }
+    if let Some(service) = walkingpad_service {
+        service.shutdown().await;
     }
     daemon.shutdown().await;
 

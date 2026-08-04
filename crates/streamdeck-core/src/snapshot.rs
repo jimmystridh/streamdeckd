@@ -20,6 +20,7 @@ use crate::integrations::{
     meetings::Meeting,
     spotify::SpotifyStatus,
     system::{MacHealth, NetworkStatus},
+    walkingpad::{WalkingPadDailyTotals, WalkingPadState},
     weather::WeatherSnapshot,
 };
 use crate::pomodoro::PomodoroSnapshot;
@@ -110,6 +111,8 @@ pub struct WorldView {
     pub media: Feed<MediaStatus>,
     pub application: Feed<ApplicationInfo>,
     pub recent_applications: Vec<ApplicationInfo>,
+    pub walkingpad: WalkingPadState,
+    pub walkingpad_daily: WalkingPadDailyTotals,
 
     /// The weather tile currently showing its expanded reading, if any.
     pub weather_detail: Option<crate::model::WeatherTile>,
@@ -152,6 +155,8 @@ impl WorldView {
             media: Feed::Loading,
             application: Feed::Loading,
             recent_applications: Vec::new(),
+            walkingpad: WalkingPadState::default(),
+            walkingpad_daily: WalkingPadDailyTotals::default(),
             weather_detail: None,
             panel_seconds_remaining: None,
             panel_total_seconds: 10,

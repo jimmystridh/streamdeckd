@@ -163,6 +163,7 @@ pub enum Icon {
     Activity,
     Network,
     Bus,
+    WalkingPad,
     Speaker,
     SpeakerMuted,
     Microphone,

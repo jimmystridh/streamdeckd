@@ -12,6 +12,10 @@ use std::sync::Arc;
 use chrono::Utc;
 use harness::Harness;
 use streamdeck_core::integrations::application::{ApplicationInfo, CustomApplicationAction};
+use streamdeck_core::integrations::walkingpad::{
+    WalkingPadConnection, WalkingPadCounters, WalkingPadMode, WalkingPadRequest,
+    WalkingPadTelemetry, WalkingPadUpdate,
+};
 use streamdeck_core::model::{KeyPosition, PageId};
 use streamdeck_core::pomodoro::{self, Phase, PomodoroState, Status};
 use streamdeck_core::state::PersistentState;
@@ -733,6 +737,135 @@ async fn the_home_weather_tile_opens_the_full_weather_page() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn walkingpad_dashboard_controls_reach_the_controller_and_stats_page() {
+    let mut harness = Harness::new(PageId::Dashboard).await;
+    harness.press(2, 3).await;
+    assert_eq!(harness.page(), PageId::WalkingPad);
+
+    let timestamp = Utc::now().timestamp_millis();
+    harness
+        .events
+        .send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Connection {
+            state: WalkingPadConnection::Connected,
+            error: None,
+        }))
+        .expect("connection sent");
+    harness
+        .events
+        .send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Status {
+            telemetry: walkingpad_telemetry(30, 100, 1_000, 600),
+            received_at_ms: timestamp,
+        }))
+        .expect("status sent");
+    harness.settle().await;
+
+    harness.press(2, 3).await;
+    assert_eq!(
+        harness.walkingpad.requests(),
+        vec![WalkingPadRequest::SetSpeed(32)]
+    );
+
+    harness
+        .events
+        .send(RuntimeEvent::WalkingPad(
+            WalkingPadUpdate::CommandSucceeded(WalkingPadRequest::SetSpeed(32)),
+        ))
+        .expect("success sent");
+    harness
+        .events
+        .send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Status {
+            telemetry: walkingpad_telemetry(32, 101, 1_010, 606),
+            received_at_ms: Utc::now().timestamp_millis(),
+        }))
+        .expect("confirmation sent");
+    harness.settle().await;
+
+    harness.press(3, 3).await;
+    assert_eq!(
+        harness.walkingpad.requests(),
+        vec![
+            WalkingPadRequest::SetSpeed(32),
+            WalkingPadRequest::SetSpeed(34)
+        ]
+    );
+
+    harness.press(1, 4).await;
+    assert_eq!(
+        harness.walkingpad.requests().last(),
+        Some(&WalkingPadRequest::Stop),
+        "stop must bypass the pending speed command"
+    );
+
+    harness.press(1, 5).await;
+    assert_eq!(harness.page(), PageId::WalkingPadStats);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn walkingpad_status_events_aggregate_only_observed_daily_deltas() {
+    let mut harness = Harness::new(PageId::WalkingPadStats).await;
+    let first = Utc::now();
+    harness
+        .events
+        .send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Connection {
+            state: WalkingPadConnection::Connected,
+            error: None,
+        }))
+        .expect("connection sent");
+    for (telemetry, received_at_ms) in [
+        (
+            walkingpad_telemetry(30, 150, 2_000, 1_200),
+            first.timestamp_millis(),
+        ),
+        (
+            walkingpad_telemetry(30, 162, 2_155, 1_263),
+            (first + chrono::Duration::seconds(1)).timestamp_millis(),
+        ),
+    ] {
+        harness
+            .events
+            .send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Status {
+                telemetry,
+                received_at_ms,
+            }))
+            .expect("status sent");
+    }
+    harness.settle().await;
+
+    let totals = &harness.runtime.state().persistent.walkingpad;
+    assert_eq!(totals.distance_hundredths, 12);
+    assert_eq!(totals.steps, 155);
+    assert_eq!(totals.elapsed_seconds, 63);
+
+    harness.runtime.shutdown().await;
+    let persisted = harness
+        .store
+        .load(PomodoroState::default())
+        .expect("WalkingPad totals persisted on clean shutdown");
+    assert_eq!(persisted.walkingpad.distance_hundredths, 12);
+    assert_eq!(persisted.walkingpad.steps, 155);
+    assert_eq!(persisted.walkingpad.elapsed_seconds, 63);
+}
+
+fn walkingpad_telemetry(
+    speed_tenths: u8,
+    distance_hundredths: u32,
+    steps: u32,
+    elapsed_seconds: u32,
+) -> WalkingPadTelemetry {
+    WalkingPadTelemetry {
+        counters: WalkingPadCounters {
+            distance_hundredths,
+            steps,
+            elapsed_seconds,
+        },
+        speed_tenths,
+        target_speed_tenths: speed_tenths,
+        belt_state: u8::from(speed_tenths > 0),
+        mode: WalkingPadMode::Manual,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn fetched_artwork_is_cached_and_triggers_a_repaint() {
     let mut harness = Harness::new(PageId::Home).await;
     let mut encoded = Vec::new();
@@ -887,6 +1020,8 @@ async fn every_page_can_be_reached_and_rendered_from_home() {
         (PageId::GitHub, vec![(2, 1), (1, 2)]),
         (PageId::Weather, vec![(3, 5)]),
         (PageId::Stensjon, vec![(3, 5), (3, 1)]),
+        (PageId::WalkingPad, vec![(2, 1), (2, 3)]),
+        (PageId::WalkingPadStats, vec![(2, 1), (2, 3), (1, 5)]),
     ] {
         // Return to Home first.
         while harness.page() != PageId::Home {

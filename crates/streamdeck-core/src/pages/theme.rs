@@ -37,6 +37,9 @@ pub const QUICK_CAPTURE: Color = Color::hex(0x7c3aed);
 pub const MAC_HEALTH: Color = Color::hex(0x0f766e);
 pub const NETWORK: Color = Color::hex(0x0369a1);
 pub const VASTTRAFIK: Color = Color::hex(0x005a9c);
+pub const WALKINGPAD: Color = Color::hex(0x0f766e);
+pub const WALKINGPAD_START: Color = Color::hex(0x15803d);
+pub const WALKINGPAD_STOP: Color = Color::hex(0xb91c1c);
 
 pub const FOCUS: Color = Color::hex(0xbe123c);
 pub const SHORT_BREAK: Color = Color::hex(0x0f766e);

@@ -2,8 +2,9 @@
 //!
 //! Every timed behaviour — Pomodoro completion, visible countdowns, long-press
 //! arming, panel dismissal, integration refresh, retry backoff, alert sound
-//! repetition — registers a keyed deadline here. When nothing is due the process
-//! sleeps instead of spinning one interval per feature.
+//! repetition, WalkingPad persistence, and midnight rollover — registers a keyed
+//! deadline here. When nothing is due the process sleeps instead of spinning one
+//! interval per feature.
 
 use std::collections::HashMap;
 
@@ -29,6 +30,14 @@ pub enum DeadlineId {
     WeatherDetail,
     /// Home changes from today's weather to tomorrow at 17:00 and back at midnight.
     HomeWeatherBoundary,
+    /// Coalesce high-frequency WalkingPad telemetry into an atomic state write.
+    WalkingPadPersist,
+    /// Clear a command error after it has been visible long enough to read.
+    WalkingPadFeedback,
+    /// Roll WalkingPad daily totals at local midnight.
+    WalkingPadMidnight,
+    /// Repaint the visible stale-age label without creating a service timer.
+    WalkingPadTick,
     /// An integration is due for a refresh.
     Refresh(IntegrationId),
 }
@@ -45,6 +54,10 @@ impl DeadlineId {
             DeadlineId::AlertSound => "alert-sound".to_string(),
             DeadlineId::WeatherDetail => "weather-detail".to_string(),
             DeadlineId::HomeWeatherBoundary => "home-weather-boundary".to_string(),
+            DeadlineId::WalkingPadPersist => "walkingpad-persist".to_string(),
+            DeadlineId::WalkingPadFeedback => "walkingpad-feedback".to_string(),
+            DeadlineId::WalkingPadMidnight => "walkingpad-midnight".to_string(),
+            DeadlineId::WalkingPadTick => "walkingpad-tick".to_string(),
             DeadlineId::Refresh(integration) => format!("refresh:{integration}"),
         }
     }

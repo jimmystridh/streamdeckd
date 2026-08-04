@@ -19,7 +19,7 @@ alternatives expensive.
 
 ## Layout
 
-Eleven pages, coordinates as `row,column`, one-based.
+Thirteen pages, coordinates as `row,column`, one-based.
 
 **Home** — Wispr Flow on key 1 (tap to start/stop hands-free dictation; hold for
 the microphone picker), Codex 5-hour and overall usage, Claude 5-hour and 7-day
@@ -36,6 +36,17 @@ Mölndal resecentrum and Tallkotten toward Heden. Each tile shows only `NÄSTA`
 and `DÄREFTER`. Tap CI to open its failed, running, or latest run; hold it to
 refresh. Tap a departure tile for Västtrafik's full board; hold it to refresh.
 Tap Network/VPN to open Tailscale, or hold it for macOS Network Settings.
+The WalkingPad glance opens its controls and shows live speed or connection
+state plus today's observed distance.
+
+**WalkingPad** — a control page with a prominent red halt-only Stop, one-packet
+Start that preserves the belt's retained target, exact ±0.2 km/h adjustments,
+and presets for 2.6, 3.0, 3.4, 4.2, and 4.5 km/h. Presets and adjustments cannot
+start a stopped belt. A second statistics page shows live connection/staleness,
+speed, session distance, steps and elapsed time, plus calendar-day distance,
+steps and walking time. Commands are serialized with status polling; Stop
+preempts a poll or another command and requests zero speed while keeping the
+belt available for the next Start.
 
 **Quick Capture** — tap creates and opens a timestamped note under `Inbox` in the
 personal Obsidian vault; hold does the same in the work vault.
@@ -131,10 +142,18 @@ checked by the golden-image test suite.
   </tr>
   <tr>
     <th>Pomodoro</th>
-    <th></th>
+    <th>WalkingPad controls</th>
   </tr>
   <tr>
     <td><img src="tests/golden/pomodoro-focus.png" alt="Pomodoro page" width="374"></td>
+    <td><img src="tests/golden/walkingpad.png" alt="WalkingPad controls page" width="374"></td>
+  </tr>
+  <tr>
+    <th>WalkingPad statistics</th>
+    <th></th>
+  </tr>
+  <tr>
+    <td><img src="tests/golden/walkingpad-stats.png" alt="WalkingPad statistics page" width="374"></td>
     <td></td>
   </tr>
 </table>
@@ -166,6 +185,23 @@ The daemon will not start while another application owns the device. Quit Elgato
 Stream Deck or OpenDeck first; `streamdeckd` never kills them for you.
 If the deck is unplugged, the daemon stays alive and checks once per second until
 the configured serial returns, then restores brightness and repaints all 15 keys.
+
+WalkingPad support uses `walkingpad` 0.2.0. The daemon holds the crate's shared
+device-store command lock for its lifetime, opens the saved device identifier
+before scanning, maintains one BLE connection, and retries disconnects with
+bounded exponential backoff. This intentionally prevents the WalkingPad CLI and
+the daemon from sending belt commands concurrently. Telemetry is polled roughly
+every 900 ms; controls disable as soon as the connection or status is not fresh.
+
+Daily WalkingPad totals persist integer hundredths of a kilometre, steps, elapsed
+seconds, and the last observed run counters. Only positive deltas between
+continuous samples are counted; reconnects, process restarts, counter resets,
+and local-midnight rollover establish a conservative new baseline. Consequently,
+walking completed entirely while the daemon was offline cannot be recovered,
+and a crash can lose at most the unflushed aggregation window (normally 30
+seconds). Clean shutdown writes the current totals immediately. Start, halt,
+mode, and speed are independent protocol operations; the daemon never changes
+mode or speed as a hidden side effect of Start or Stop.
 
 Wispr control uses the app's own `start-hands-free`, `stop-hands-free`, and
 `switch-mic` deep links, so it does not require Accessibility access. Microphone
@@ -248,7 +284,7 @@ cargo run --release -p streamdeckd -- --foreground
 crates/streamdeck-core     domain model: config, state, pomodoro, pages, parsers
 crates/streamdeck-render   tiny-skia renderer, embedded fonts, project-owned icons
 crates/streamdeck-macos    audio, system media, Spotify, Wispr, notifications, Meet, credentials
-crates/streamdeckd         device I/O, services, coordinator, control socket
+crates/streamdeckd         device I/O, services, WalkingPad controller, coordinator, control socket
 crates/streamdeckctl       the CLI
 crates/streamdeck-alert    the AppKit completion alert
 ```
@@ -263,8 +299,12 @@ PNG.
 
 One deadline queue serves every timed behaviour — Pomodoro completion, visible
 countdowns, long-press arming, panel dismissal, integration refresh, retry
-backoff, alert repetition — so the process sleeps when nothing is due. Integration
-refresh is visibility-gated: nothing polls for a key nobody can see.
+backoff, alert repetition, WalkingPad persistence and midnight rollover — so the
+process sleeps when nothing is due. Integration refresh is visibility-gated:
+nothing polls for a key nobody can see. WalkingPad status polling is isolated in
+its controller task because safety telemetry and command preemption must continue
+even when its page is hidden; unchanged tile views are discarded before native
+rasterization or USB writes.
 
 ## Secrets
 

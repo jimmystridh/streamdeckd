@@ -13,6 +13,7 @@ pub mod meetings;
 pub mod system;
 pub mod usage;
 pub mod vasttrafik;
+pub mod walkingpad;
 pub mod weather;
 
 use std::time::Duration;

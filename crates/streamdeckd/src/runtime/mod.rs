@@ -15,6 +15,7 @@ use chrono::Utc;
 use streamdeck_core::config::AmbientBrightnessConfig;
 use streamdeck_core::control::{PomodoroAction, Request, Response};
 use streamdeck_core::deadline::DeadlineId;
+use streamdeck_core::integrations::walkingpad::{WalkingPadConnection, WalkingPadUpdate};
 use streamdeck_core::model::{IntegrationId, KeyPosition, PageId};
 use streamdeck_core::pages::views::{render, RenderContext};
 use streamdeck_core::pages::{self, Action, KeyBinding};
@@ -38,6 +39,7 @@ use crate::device::{DeckDevice, DeviceError, FrameCache, KeyEvent};
 use crate::logging::LevelControl;
 use crate::metrics::Metrics;
 use crate::services::http::HttpClient;
+use crate::services::walkingpad::WalkingPadCommander;
 use actions::{ActionOutcome, Effects};
 use state::RuntimeState;
 
@@ -64,6 +66,7 @@ pub enum RuntimeEvent {
     DeviceReconnected(ReconnectedDevice),
     /// A native reading from the Mac's ambient-light sensor, in lux.
     AmbientLight(f64),
+    WalkingPad(WalkingPadUpdate),
     /// A spawned refresh finished.
     Refreshed(IntegrationId, actions::RefreshResult),
     /// A spawned side effect finished.
@@ -96,6 +99,7 @@ pub struct Services {
     pub meet: Arc<dyn MeetLauncher>,
     pub http: HttpClient,
     pub vasttrafik: crate::services::vasttrafik::Client,
+    pub walkingpad: Arc<dyn WalkingPadCommander>,
     /// Path to the alert helper, when installed.
     pub helper_path: Option<std::path::PathBuf>,
 }
@@ -143,6 +147,8 @@ const SCREENSAVER_FADE_IN_MS: u64 = 1_200;
 const AMBIENT_FILTER_NEW_SAMPLE_WEIGHT: f64 = 0.25;
 const AMBIENT_BRIGHTNESS_STEP: f64 = 5.0;
 const AMBIENT_BRIGHTNESS_HYSTERESIS: f64 = 4.0;
+const WALKINGPAD_PERSIST_DELAY_MS: u64 = 30_000;
+const WALKINGPAD_FEEDBACK_MS: u64 = 6_000;
 
 #[derive(Debug, Default)]
 struct AmbientBrightnessController {
@@ -283,6 +289,16 @@ impl Runtime {
         let now_ms = self.now_ms();
         self.set_deck_brightness(self.effective_brightness()).await;
 
+        if self
+            .state
+            .persistent
+            .walkingpad
+            .rollover(Utc::now(), self.state.timezone)
+        {
+            self.persist(Durability::Normal);
+        }
+        self.state.schedule_walkingpad_midnight(Utc::now(), now_ms);
+
         // A deadline crossed while the daemon was not running still fires once.
         self.reconcile_pomodoro().await;
         self.state.schedule_refresh_deadlines(now_ms);
@@ -393,6 +409,7 @@ impl Runtime {
                     self.set_deck_brightness(brightness).await;
                 }
             }
+            RuntimeEvent::WalkingPad(update) => self.walkingpad_update(update).await,
             RuntimeEvent::Refreshed(id, result) => self.apply_refresh(id, result).await,
             RuntimeEvent::ActionFinished(outcome) => self.apply_action_outcome(outcome).await,
             RuntimeEvent::ArtworkFetched { key, result } => {
@@ -486,6 +503,32 @@ impl Runtime {
                         .schedule_home_weather_boundary(Utc::now(), now_ms);
                     repaint = true;
                 }
+                DeadlineId::WalkingPadPersist => {
+                    if self.state.walkingpad_persist_dirty {
+                        self.persist(Durability::Normal);
+                        self.state.walkingpad_persist_dirty = false;
+                    }
+                }
+                DeadlineId::WalkingPadFeedback => {
+                    self.state.walkingpad.clear_feedback();
+                    repaint = true;
+                }
+                DeadlineId::WalkingPadMidnight => {
+                    if self
+                        .state
+                        .persistent
+                        .walkingpad
+                        .rollover(Utc::now(), self.state.timezone)
+                    {
+                        self.persist(Durability::Critical);
+                    }
+                    self.state.schedule_walkingpad_midnight(Utc::now(), now_ms);
+                    repaint = true;
+                }
+                DeadlineId::WalkingPadTick => {
+                    self.state.schedule_walkingpad_tick(now_ms);
+                    repaint = true;
+                }
                 DeadlineId::Refresh(integration) => {
                     self.spawn_refresh(integration, now_ms);
                 }
@@ -502,6 +545,10 @@ impl Runtime {
         self.metrics.wakes += 1;
         let now_ms = self.now_ms();
 
+        if self.state.walkingpad_persist_dirty {
+            self.persist(Durability::Normal);
+            self.state.walkingpad_persist_dirty = false;
+        }
         self.reconcile_pomodoro().await;
         self.state.deadlines.drain_all();
         self.state.presses.clear();
@@ -509,6 +556,8 @@ impl Runtime {
         self.state.weather_detail = None;
         self.state.schedule_refresh_deadlines(now_ms);
         self.state.schedule_pomodoro_deadlines(Utc::now(), now_ms);
+        self.state.schedule_walkingpad_midnight(Utc::now(), now_ms);
+        self.state.walkingpad_continuous = false;
         if self.state.navigator.panel_is_open() {
             // A panel that should have closed during sleep closes now.
             if self.state.navigator.poll_panel(now_ms) {
@@ -530,6 +579,62 @@ impl Runtime {
             self.screensaver_next_frame_ms = now_ms;
             self.render_screensaver().await;
         } else {
+            self.render().await;
+        }
+    }
+
+    async fn walkingpad_update(&mut self, update: WalkingPadUpdate) {
+        let now_ms = self.now_ms();
+        match update {
+            WalkingPadUpdate::Connection { state, error } => {
+                if state != WalkingPadConnection::Connected {
+                    self.state.walkingpad_continuous = false;
+                }
+                self.state.walkingpad.connection_changed(state, error);
+            }
+            WalkingPadUpdate::Status {
+                telemetry,
+                received_at_ms,
+            } => {
+                let observed_at = chrono::DateTime::<Utc>::from_timestamp_millis(received_at_ms)
+                    .unwrap_or_else(Utc::now);
+                self.state.persistent.walkingpad.observe(
+                    telemetry.counters,
+                    observed_at,
+                    self.state.timezone,
+                    self.state.walkingpad_continuous,
+                );
+                self.state.walkingpad_continuous = true;
+                self.state
+                    .walkingpad
+                    .apply_status(telemetry, received_at_ms);
+                self.state.walkingpad_persist_dirty = true;
+                self.state.deadlines.set_if_sooner(
+                    DeadlineId::WalkingPadPersist,
+                    now_ms + WALKINGPAD_PERSIST_DELAY_MS,
+                );
+            }
+            WalkingPadUpdate::CommandSucceeded(request) => {
+                self.state.walkingpad.command_succeeded(request);
+            }
+            WalkingPadUpdate::CommandFailed { request, error } => {
+                self.state.walkingpad.command_failed(request, error);
+            }
+        }
+
+        if self.state.walkingpad.feedback.is_some() {
+            self.state.deadlines.set(
+                DeadlineId::WalkingPadFeedback,
+                now_ms + WALKINGPAD_FEEDBACK_MS,
+            );
+        }
+        self.state.schedule_walkingpad_tick(now_ms);
+        if !self.screen_locked
+            && matches!(
+                self.state.visible_page(),
+                PageId::Dashboard | PageId::WalkingPad | PageId::WalkingPadStats
+            )
+        {
             self.render().await;
         }
     }
@@ -696,6 +801,21 @@ impl Runtime {
         }
         for task in effects.spawn {
             actions::spawn(task, &self.services, &self.state, self.sender.clone());
+        }
+        if let Some(request) = effects.walkingpad_request {
+            if let Err(error) = self.services.walkingpad.send(request) {
+                self.state.walkingpad.command_failed(request, error);
+                self.state.deadlines.set(
+                    DeadlineId::WalkingPadFeedback,
+                    now_ms + WALKINGPAD_FEEDBACK_MS,
+                );
+            }
+        }
+        if effects.walkingpad_feedback_changed {
+            self.state.deadlines.set(
+                DeadlineId::WalkingPadFeedback,
+                now_ms + WALKINGPAD_FEEDBACK_MS,
+            );
         }
         self.spawn_due_refreshes(now_ms);
         self.render().await;
@@ -1222,6 +1342,7 @@ impl Runtime {
                 self.metrics.last_config_error = None;
                 let now_ms = self.now_ms();
                 self.state.schedule_refresh_deadlines(now_ms);
+                self.state.schedule_walkingpad_midnight(Utc::now(), now_ms);
                 self.set_deck_brightness(self.effective_brightness()).await;
                 // Colours or thresholds may have changed, so repaint everything.
                 self.invalidate_render_caches();
@@ -1363,6 +1484,21 @@ impl Runtime {
                     .iter()
                     .map(|microphone| microphone.label.as_str())
                     .collect::<Vec<_>>(),
+            },
+            "walkingpad": {
+                "connection": format!("{:?}", self.state.walkingpad.connection).to_lowercase(),
+                "status_age_seconds": self.state.walkingpad
+                    .status_age_ms(Utc::now().timestamp_millis())
+                    .map(|age| age / 1_000),
+                "speed_tenths": self.state.walkingpad.telemetry
+                    .as_ref()
+                    .map(|status| status.speed_tenths),
+                "today": {
+                    "date": self.state.persistent.walkingpad.date,
+                    "distance_hundredths": self.state.persistent.walkingpad.distance_hundredths,
+                    "steps": self.state.persistent.walkingpad.steps,
+                    "elapsed_seconds": self.state.persistent.walkingpad.elapsed_seconds,
+                },
             },
         })
     }

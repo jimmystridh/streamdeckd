@@ -223,6 +223,13 @@ pub fn layers(icon: Icon) -> Vec<Layer> {
             Layer::fill(circle(0.31, 0.82, 0.1)),
             Layer::fill(circle(0.69, 0.82, 0.1)),
         ],
+        Icon::WalkingPad => vec![
+            Layer::stroke(polyline(&[(0.68, 0.2), (0.8, 0.2), (0.8, 0.7)]), 0.08),
+            Layer::fill(rounded_rect(0.12, 0.58, 0.7, 0.2, 0.08)),
+            Layer::fill(rounded_rect(0.58, 0.1, 0.24, 0.18, 0.04)).faded(0.82),
+            Layer::fill(circle(0.25, 0.82, 0.08)),
+            Layer::fill(circle(0.7, 0.82, 0.08)),
+        ],
         Icon::Speaker => vec![
             Layer::fill(polygon(&[
                 (0.12, 0.36),
