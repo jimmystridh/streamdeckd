@@ -115,7 +115,7 @@ pub fn parse_runs(repository: &str, body: &str) -> Result<Vec<CiRun>, ParseError
 
 pub fn merge(runs: impl IntoIterator<Item = CiRun>) -> CiSnapshot {
     let mut runs: Vec<_> = runs.into_iter().collect();
-    runs.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
+    runs.sort_by_key(|run| std::cmp::Reverse(run.updated_at));
     CiSnapshot { runs }
 }
 
