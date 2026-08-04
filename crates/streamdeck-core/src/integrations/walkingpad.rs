@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const MIN_SPEED_TENTHS: u8 = 5;
 pub const MAX_SPEED_TENTHS: u8 = 60;
 pub const SPEED_STEP_TENTHS: u8 = 2;
+pub const DEFAULT_QUICK_SPEEDS_TENTHS: [u8; 5] = [26, 30, 34, 42, 45];
 pub const STATUS_STALE_AFTER_MS: i64 = 3_000;
 pub const COMMAND_CONFIRMATION_TIMEOUT_MS: i64 = 10_000;
 
@@ -141,6 +142,28 @@ impl WalkingPadState {
             && self
                 .status_age_ms(now_ms)
                 .is_some_and(|age| age <= STATUS_STALE_AFTER_MS)
+    }
+
+    pub fn active_speed_for_quick_setting(&self, now_ms: i64) -> Result<u8, &'static str> {
+        if self.pending.is_some() {
+            return Err("COMMAND BUSY");
+        }
+        if self.connection != WalkingPadConnection::Connected {
+            return Err("DISCONNECTED");
+        }
+        if !self.has_fresh_status(now_ms) {
+            return Err("STATUS STALE");
+        }
+        let telemetry = self.telemetry.as_ref().ok_or("NO STATUS")?;
+        if !telemetry.is_moving() {
+            return Err("START FIRST");
+        }
+        let speed = telemetry.control_speed_tenths();
+        if (MIN_SPEED_TENTHS..=MAX_SPEED_TENTHS).contains(&speed) {
+            Ok(speed)
+        } else {
+            Err("NO ACTIVE SPEED")
+        }
     }
 
     pub fn prepare(

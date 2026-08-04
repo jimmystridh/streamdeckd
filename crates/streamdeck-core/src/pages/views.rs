@@ -119,7 +119,7 @@ pub fn render(tile: Tile, context: &RenderContext<'_>) -> KeyView {
         Tile::WalkingPadStop => walkingpad_stop(world),
         Tile::WalkingPadSpeed => walkingpad_speed(world),
         Tile::WalkingPadSpeedAdjust(command) => walkingpad_speed_adjust(world, command),
-        Tile::WalkingPadQuickSpeed(tenths) => walkingpad_quick_speed(world, tenths),
+        Tile::WalkingPadQuickSpeed(slot) => walkingpad_quick_speed(world, slot),
         Tile::WalkingPadSession(metric) => walkingpad_session(world, metric),
         Tile::WalkingPadDaily(metric) => walkingpad_daily(world, metric),
         Tile::WalkingPadStatsButton => KeyView::solid(theme::NAVIGATION)
@@ -1790,7 +1790,17 @@ fn walkingpad_speed_adjust(world: &WorldView, command: WalkingPadCommand) -> Key
         })
 }
 
-fn walkingpad_quick_speed(world: &WorldView, tenths: u8) -> KeyView {
+fn walkingpad_quick_speed(world: &WorldView, slot: usize) -> KeyView {
+    let tenths = world
+        .walkingpad_quick_speeds
+        .get(slot)
+        .copied()
+        .or_else(|| {
+            crate::integrations::walkingpad::DEFAULT_QUICK_SPEEDS_TENTHS
+                .get(slot)
+                .copied()
+        })
+        .unwrap_or(crate::integrations::walkingpad::MIN_SPEED_TENTHS);
     let command = WalkingPadCommand::SetSpeed(tenths);
     if let Some(error) = walkingpad_feedback(world, command) {
         return KeyView::solid(theme::ERROR)
@@ -1826,7 +1836,11 @@ fn walkingpad_quick_speed(world: &WorldView, tenths: u8) -> KeyView {
     })
     .header("SET SPEED")
     .value(format_speed(tenths), 31.0)
-    .footer(if enabled { "KM/H" } else { "START FIRST" })
+    .footer(if enabled {
+        "KM/H · HOLD SAVE"
+    } else {
+        "START FIRST"
+    })
     .status(if pending {
         KeyStatus::Alert
     } else if selected {
@@ -3028,8 +3042,16 @@ mod tests {
             "3.4"
         );
         assert_eq!(
-            view(Tile::WalkingPadQuickSpeed(34), &world).status,
+            view(Tile::WalkingPadQuickSpeed(2), &world).status,
             KeyStatus::Selected
+        );
+        world.walkingpad_quick_speeds[0] = 36;
+        assert_eq!(
+            view(Tile::WalkingPadQuickSpeed(0), &world)
+                .value
+                .expect("custom quick speed")
+                .text,
+            "3.6"
         );
 
         world.walkingpad.last_status_at_ms = Some(world.now.timestamp_millis() - 5_000);

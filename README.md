@@ -43,7 +43,9 @@ state plus today's observed distance.
 Start while the belt is awake, an explicit wake-then-start sequence from standby,
 exact ±0.2 km/h adjustments, and presets for 2.6, 3.0, 3.4, 4.2, and 4.5 km/h.
 Start uses the belt's configured start speed; presets and adjustments cannot start
-a stopped belt. A second statistics page shows live connection/staleness,
+a stopped belt. Hold any preset to replace it with the belt's current active
+target speed; custom presets persist across daemon restarts. A second statistics
+page shows live connection/staleness,
 speed, session distance, steps and elapsed time, plus calendar-day distance,
 steps and walking time. Commands are serialized with status polling; Stop
 preempts a poll or another command and requests zero speed while keeping the

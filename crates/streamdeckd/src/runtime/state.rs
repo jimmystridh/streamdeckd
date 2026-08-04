@@ -314,6 +314,7 @@ impl RuntimeState {
             recent_applications: self.recent_applications(),
             walkingpad: self.walkingpad.clone(),
             walkingpad_daily: self.persistent.walkingpad.clone(),
+            walkingpad_quick_speeds: self.persistent.walkingpad_quick_speeds,
             weather_detail: self
                 .weather_detail
                 .filter(|(_, until)| now_ms < *until)

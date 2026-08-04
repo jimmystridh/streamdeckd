@@ -23,7 +23,7 @@ use streamdeck_core::integrations::media::MediaStatus;
 use streamdeck_core::integrations::meetings::Meeting;
 use streamdeck_core::integrations::spotify::SpotifyStatus;
 use streamdeck_core::integrations::system::{MacHealth, NetworkStatus};
-use streamdeck_core::integrations::walkingpad::WalkingPadRequest;
+use streamdeck_core::integrations::walkingpad::{WalkingPadCommand, WalkingPadRequest};
 use streamdeck_core::integrations::weather::WeatherSnapshot;
 use streamdeck_core::model::{AudioKind, IntegrationId, PageId};
 use streamdeck_core::pages::{
@@ -220,6 +220,36 @@ pub fn apply(state: &mut RuntimeState, action: Action, now: DateTime<Utc>, now_m
                 effects.walkingpad_feedback_changed = true;
             }
         },
+        Action::WalkingPadQuickSpeed(slot) => {
+            if let Some(speed) = state.persistent.walkingpad_quick_speeds.get(slot).copied() {
+                let command = WalkingPadCommand::SetSpeed(speed);
+                match state.walkingpad.prepare(command, now_wall) {
+                    Ok(request) => effects.walkingpad_request = request,
+                    Err(message) => {
+                        state.walkingpad.reject(command, message);
+                        effects.walkingpad_feedback_changed = true;
+                    }
+                }
+            }
+        }
+        Action::SaveWalkingPadQuickSpeed(slot) => {
+            if let Some(configured) = state.persistent.walkingpad_quick_speeds.get(slot).copied() {
+                let source = WalkingPadCommand::SetSpeed(configured);
+                match state.walkingpad.active_speed_for_quick_setting(now_wall) {
+                    Ok(speed) => {
+                        if state.persistent.walkingpad_quick_speeds[slot] != speed {
+                            state.persistent.walkingpad_quick_speeds[slot] = speed;
+                            effects.persist = Some(Durability::Normal);
+                        }
+                        state.walkingpad.clear_feedback();
+                    }
+                    Err(message) => {
+                        state.walkingpad.reject(source, message);
+                        effects.walkingpad_feedback_changed = true;
+                    }
+                }
+            }
+        }
         Action::OpenMeeting(index) => effects.spawn.push(Task::OpenMeeting(index)),
         Action::OpenGitHubMetric(kind) => {
             if let Some(snapshot) = state.feeds.github.peek() {
@@ -874,8 +904,7 @@ mod tests {
     use super::*;
     use streamdeck_core::config::Config;
     use streamdeck_core::integrations::walkingpad::{
-        WalkingPadCommand, WalkingPadConnection, WalkingPadCounters, WalkingPadMode,
-        WalkingPadTelemetry,
+        WalkingPadConnection, WalkingPadCounters, WalkingPadMode, WalkingPadTelemetry,
     };
     use streamdeck_core::model::PageId;
     use streamdeck_core::pomodoro::{Phase, Status};
@@ -1094,6 +1123,56 @@ mod tests {
         );
 
         assert_eq!(effects.walkingpad_request, Some(WalkingPadRequest::Stop));
+    }
+
+    #[test]
+    fn a_walkingpad_quick_speed_hold_saves_the_active_target_not_the_ramp_sample() {
+        let mut state = state();
+        connected_walkingpad(&mut state, 34);
+        state
+            .walkingpad
+            .telemetry
+            .as_mut()
+            .expect("telemetry")
+            .target_speed_tenths = 36;
+
+        let saved = apply(
+            &mut state,
+            Action::SaveWalkingPadQuickSpeed(0),
+            now(),
+            1_000,
+        );
+        assert_eq!(state.persistent.walkingpad_quick_speeds[0], 36);
+        assert_eq!(saved.persist, Some(Durability::Normal));
+        assert_eq!(saved.walkingpad_request, None);
+
+        let selected = apply(&mut state, Action::WalkingPadQuickSpeed(0), now(), 2_000);
+        assert_eq!(
+            selected.walkingpad_request,
+            Some(WalkingPadRequest::SetSpeed(36))
+        );
+    }
+
+    #[test]
+    fn a_walkingpad_quick_speed_hold_requires_a_fresh_moving_belt() {
+        let mut state = state();
+        connected_walkingpad(&mut state, 0);
+        let before = state.persistent.walkingpad_quick_speeds;
+
+        let effects = apply(
+            &mut state,
+            Action::SaveWalkingPadQuickSpeed(2),
+            now(),
+            1_000,
+        );
+
+        assert_eq!(state.persistent.walkingpad_quick_speeds, before);
+        assert_eq!(effects.persist, None);
+        assert!(effects.walkingpad_feedback_changed);
+        assert_eq!(
+            state.walkingpad.feedback.expect("feedback").message,
+            "START FIRST"
+        );
     }
 
     #[test]

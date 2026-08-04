@@ -1493,6 +1493,7 @@ impl Runtime {
                 "speed_tenths": self.state.walkingpad.telemetry
                     .as_ref()
                     .map(|status| status.speed_tenths),
+                "quick_speeds_tenths": self.state.persistent.walkingpad_quick_speeds,
                 "today": {
                     "date": self.state.persistent.walkingpad.date,
                     "distance_hundredths": self.state.persistent.walkingpad.distance_hundredths,
