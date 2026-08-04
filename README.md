@@ -40,9 +40,10 @@ The WalkingPad glance opens its controls and shows live speed or connection
 state plus today's observed distance.
 
 **WalkingPad** — a control page with a prominent red halt-only Stop, one-packet
-Start that preserves the belt's retained target, exact ±0.2 km/h adjustments,
-and presets for 2.6, 3.0, 3.4, 4.2, and 4.5 km/h. Presets and adjustments cannot
-start a stopped belt. A second statistics page shows live connection/staleness,
+Start while the belt is awake, an explicit wake-then-start sequence from standby,
+exact ±0.2 km/h adjustments, and presets for 2.6, 3.0, 3.4, 4.2, and 4.5 km/h.
+Start uses the belt's configured start speed; presets and adjustments cannot start
+a stopped belt. A second statistics page shows live connection/staleness,
 speed, session distance, steps and elapsed time, plus calendar-day distance,
 steps and walking time. Commands are serialized with status polling; Stop
 preempts a poll or another command and requests zero speed while keeping the

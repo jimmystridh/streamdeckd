@@ -141,6 +141,7 @@ trait PadBackend: Send {
 
 #[async_trait]
 trait PadConnection: Send {
+    async fn wake(&mut self) -> Result<(), String>;
     async fn start(&mut self) -> Result<(), String>;
     async fn halt(&mut self) -> Result<(), String>;
     async fn set_speed(&mut self, tenths: u8) -> Result<(), String>;
@@ -230,6 +231,13 @@ struct RealConnection {
 
 #[async_trait]
 impl PadConnection for RealConnection {
+    async fn wake(&mut self) -> Result<(), String> {
+        self.pad
+            .set_mode(Mode::Manual)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     async fn start(&mut self) -> Result<(), String> {
         self.pad.start().await.map_err(|error| error.to_string())
     }
@@ -505,6 +513,8 @@ async fn execute_normal_preemptible(
         publish_command_failure(events, request, error);
         return Ok(());
     }
+    let wake_from_standby = request == WalkingPadRequest::Start
+        && last_status.is_some_and(|(status, _)| status.is_standby());
 
     enum Outcome {
         Command(Result<(), String>),
@@ -513,7 +523,7 @@ async fn execute_normal_preemptible(
     }
 
     let outcome = {
-        let command = execute_normal(pad, request);
+        let command = execute_normal(pad, request, wake_from_standby);
         tokio::pin!(command);
         tokio::select! {
             biased;
@@ -565,9 +575,21 @@ fn validate_motion_request(
 async fn execute_normal(
     pad: &mut dyn PadConnection,
     request: WalkingPadRequest,
+    wake_from_standby: bool,
 ) -> Result<(), String> {
+    tracing::info!(
+        component = "walkingpad",
+        ?request,
+        wake_from_standby,
+        "executing WalkingPad command"
+    );
     match request {
-        WalkingPadRequest::Start => pad.start().await,
+        WalkingPadRequest::Start => {
+            if wake_from_standby {
+                pad.wake().await?;
+            }
+            pad.start().await
+        }
         WalkingPadRequest::SetSpeed(tenths) => pad.set_speed(tenths).await,
         WalkingPadRequest::Stop => unreachable!("stop uses the urgent channel"),
     }
@@ -578,6 +600,11 @@ async fn execute_stop(
     events: &mpsc::UnboundedSender<RuntimeEvent>,
 ) -> Result<(), String> {
     let request = WalkingPadRequest::Stop;
+    tracing::info!(
+        component = "walkingpad",
+        ?request,
+        "executing WalkingPad command"
+    );
     if let Err(error) = pad.halt().await {
         publish_command_failure(events, request, error.clone());
         return Err(error);
@@ -696,6 +723,11 @@ mod tests {
 
     #[async_trait]
     impl PadConnection for FakeConnection {
+        async fn wake(&mut self) -> Result<(), String> {
+            self.trace.lock().unwrap().push("wake".to_string());
+            Ok(())
+        }
+
         async fn start(&mut self) -> Result<(), String> {
             self.trace.lock().unwrap().push("start".to_string());
             Ok(())
@@ -739,6 +771,14 @@ mod tests {
         }
     }
 
+    fn standby_status() -> WalkingPadTelemetry {
+        WalkingPadTelemetry {
+            belt_state: 5,
+            mode: WalkingPadMode::Standby,
+            ..status(0)
+        }
+    }
+
     async fn wait_for(trace: &Arc<Mutex<Vec<String>>>, expected: &str) {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -750,6 +790,67 @@ mod tests {
         })
         .await
         .expect("trace entry");
+    }
+
+    #[tokio::test]
+    async fn ready_start_uses_only_the_atomic_start_command() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let connection = FakeConnection {
+            trace: Arc::clone(&trace),
+            statuses: Arc::new(Mutex::new(VecDeque::from([status(0)]))),
+            block_status: None,
+        };
+        let (events, _receiver) = mpsc::unbounded_channel();
+        let service = WalkingPadService::spawn_with_backend(
+            events,
+            Box::new(FakeBackend {
+                connection: Some(connection),
+            }),
+        );
+
+        wait_for(&trace, "poll").await;
+        service
+            .controller
+            .send(WalkingPadRequest::Start)
+            .expect("start queued");
+        wait_for(&trace, "start").await;
+
+        assert!(!trace.lock().unwrap().iter().any(|entry| entry == "wake"));
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn standby_start_wakes_then_uses_the_atomic_start_command() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let connection = FakeConnection {
+            trace: Arc::clone(&trace),
+            statuses: Arc::new(Mutex::new(VecDeque::from([standby_status()]))),
+            block_status: None,
+        };
+        let (events, _receiver) = mpsc::unbounded_channel();
+        let service = WalkingPadService::spawn_with_backend(
+            events,
+            Box::new(FakeBackend {
+                connection: Some(connection),
+            }),
+        );
+
+        wait_for(&trace, "poll").await;
+        service
+            .controller
+            .send(WalkingPadRequest::Start)
+            .expect("start queued");
+        wait_for(&trace, "start").await;
+
+        let commands: Vec<_> = trace
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|entry| entry.as_str() == "wake" || entry.as_str() == "start")
+            .cloned()
+            .collect();
+        assert_eq!(commands, ["wake", "start"]);
+        service.shutdown().await;
     }
 
     #[tokio::test]

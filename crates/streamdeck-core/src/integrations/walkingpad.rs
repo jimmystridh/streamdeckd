@@ -61,6 +61,10 @@ impl WalkingPadTelemetry {
         self.speed_tenths > 0
     }
 
+    pub fn is_standby(&self) -> bool {
+        self.mode == WalkingPadMode::Standby || self.belt_state == 5
+    }
+
     pub fn control_speed_tenths(&self) -> u8 {
         if self.is_moving()
             && (MIN_SPEED_TENTHS..=MAX_SPEED_TENTHS).contains(&self.target_speed_tenths)
@@ -157,6 +161,16 @@ impl WalkingPadState {
             .map(WalkingPadTelemetry::control_speed_tenths);
         if command != WalkingPadCommand::Stop && !self.has_fresh_status(now_ms) {
             return Err("STATUS STALE");
+        }
+        if command == WalkingPadCommand::Stop
+            && self.pending.is_none()
+            && self.has_fresh_status(now_ms)
+            && self
+                .telemetry
+                .as_ref()
+                .is_some_and(|status| !status.is_moving())
+        {
+            return Ok(None);
         }
         let request = request_for(command, current)?;
         if let Some(request) = request {
@@ -447,6 +461,24 @@ mod tests {
         assert_eq!(
             request_for(WalkingPadCommand::Start, Some(0)),
             Ok(Some(WalkingPadRequest::Start))
+        );
+    }
+
+    #[test]
+    fn stop_is_silent_when_fresh_status_already_says_stopped() {
+        let mut stopped = WalkingPadState {
+            connection: WalkingPadConnection::Connected,
+            telemetry: Some(telemetry(0)),
+            last_status_at_ms: Some(1_000),
+            ..WalkingPadState::default()
+        };
+        assert_eq!(stopped.prepare(WalkingPadCommand::Stop, 1_000), Ok(None));
+        assert!(stopped.pending.is_none());
+
+        stopped.last_status_at_ms = Some(0);
+        assert_eq!(
+            stopped.prepare(WalkingPadCommand::Stop, 10_000),
+            Ok(Some(WalkingPadRequest::Stop))
         );
     }
 

@@ -1605,6 +1605,11 @@ fn walkingpad_connection(world: &WorldView) -> KeyView {
 
 fn walkingpad_start(world: &WorldView) -> KeyView {
     let command = WalkingPadCommand::Start;
+    let standby = world
+        .walkingpad
+        .telemetry
+        .as_ref()
+        .is_some_and(WalkingPadTelemetry::is_standby);
     if let Some(error) = walkingpad_feedback(world, command) {
         return KeyView::solid(theme::ERROR)
             .glyph(Icon::Cross)
@@ -1620,9 +1625,13 @@ fn walkingpad_start(world: &WorldView) -> KeyView {
     {
         return KeyView::solid(theme::WALKINGPAD_START)
             .glyph(Icon::Play)
-            .header("STARTING")
-            .value("RESUME", 22.0)
-            .footer("DEVICE TARGET")
+            .header(if standby { "WAKING" } else { "STARTING" })
+            .value(if standby { "WAKE" } else { "RESUME" }, 22.0)
+            .footer(if standby {
+                "MANUAL THEN START"
+            } else {
+                "DEVICE START SPEED"
+            })
             .status(KeyStatus::Selected);
     }
 
@@ -1638,9 +1647,13 @@ fn walkingpad_start(world: &WorldView) -> KeyView {
     KeyView::solid(theme::WALKINGPAD_START)
         .glyph(Icon::Play)
         .header("START")
-        .value("RESUME", 22.0)
+        .value(if standby { "WAKE" } else { "RESUME" }, 22.0)
         .footer(if enabled {
-            "DEVICE TARGET"
+            if standby {
+                "THEN START"
+            } else {
+                "DEVICE START SPEED"
+            }
         } else if !fresh {
             "WAIT FOR STATUS"
         } else if !stopped {
@@ -1677,16 +1690,32 @@ fn walkingpad_stop(world: &WorldView) -> KeyView {
             .status(KeyStatus::Alert);
     }
     let connected = world.walkingpad.connection == WalkingPadConnection::Connected;
+    let fresh = world
+        .walkingpad
+        .has_fresh_status(world.now.timestamp_millis());
+    let moving = world
+        .walkingpad
+        .telemetry
+        .as_ref()
+        .is_some_and(WalkingPadTelemetry::is_moving);
+    let another_command_pending = world.walkingpad.pending.is_some();
+    let enabled = connected && (another_command_pending || !fresh || moving);
     KeyView::solid(theme::WALKINGPAD_STOP)
         .glyph(Icon::Cross)
         .header("STOP")
-        .value("HALT", 22.0)
-        .footer(if connected {
+        .value(if enabled { "HALT" } else { "STOPPED" }, 22.0)
+        .footer(if another_command_pending {
+            "CANCEL COMMAND"
+        } else if moving {
             "STAY READY"
+        } else if connected && fresh {
+            "NO COMMAND SENT"
+        } else if connected {
+            "STATUS STALE"
         } else {
             "DISCONNECTED"
         })
-        .status(if connected {
+        .status(if enabled {
             KeyStatus::Ok
         } else {
             KeyStatus::Disabled
@@ -3020,6 +3049,39 @@ mod tests {
         let disconnected = view(Tile::WalkingPadConnection, &world);
         assert_eq!(disconnected.value.expect("state").text, "DISCONNECTED");
         assert_eq!(disconnected.status, KeyStatus::Disabled);
+    }
+
+    #[test]
+    fn standby_offers_wake_without_sending_another_stop() {
+        let mut world = world();
+        world.walkingpad = WalkingPadState {
+            connection: WalkingPadConnection::Connected,
+            telemetry: Some(WalkingPadTelemetry {
+                counters: WalkingPadCounters::default(),
+                speed_tenths: 0,
+                target_speed_tenths: 0,
+                belt_state: 5,
+                mode: WalkingPadMode::Standby,
+            }),
+            last_status_at_ms: Some(world.now.timestamp_millis()),
+            ..WalkingPadState::default()
+        };
+
+        let start = view(Tile::WalkingPadStart, &world);
+        assert_eq!(start.value.expect("start label").text, "WAKE");
+        assert_eq!(
+            start.footer_center.expect("start footer").text,
+            "THEN START"
+        );
+        assert_eq!(start.status, KeyStatus::Ok);
+
+        let stop = view(Tile::WalkingPadStop, &world);
+        assert_eq!(stop.value.expect("stop label").text, "STOPPED");
+        assert_eq!(
+            stop.footer_center.expect("stop footer").text,
+            "NO COMMAND SENT"
+        );
+        assert_eq!(stop.status, KeyStatus::Disabled);
     }
 
     #[test]
