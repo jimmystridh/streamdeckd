@@ -53,4 +53,5 @@ jobs:
         uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          ignore: RUSTSEC-2026-0192
+          # `bluest` 0.6.9 still depends on `instant` through futures-lite 1.x.
+          ignore: RUSTSEC-2026-0192,RUSTSEC-2024-0384
