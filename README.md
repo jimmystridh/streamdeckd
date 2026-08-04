@@ -163,18 +163,32 @@ checked by the golden-image test suite.
 
 ```sh
 ./scripts/install.sh              # build, install, load the LaunchAgent
-./scripts/install.sh --no-agent   # binaries only, start it yourself
+./scripts/install.sh --no-agent   # install without loading the LaunchAgent
 ```
 
-The installer builds release binaries, replaces them atomically, copies the
-configuration template only if no configuration exists, validates the generated
-LaunchAgent with `plutil`, and rolls the binaries back if the new build does not
-become healthy within twenty seconds.
+The installer builds release binaries, creates a signed macOS application bundle,
+replaces the CLI tools atomically, copies the configuration template only if no
+configuration exists, validates the generated LaunchAgent with `plutil`, and
+rolls the installation back if the new build does not become healthy within
+sixty seconds. The LaunchAgent runs the daemon from inside the app bundle so
+macOS can retain its Bluetooth privacy identity across updates.
+
+When a macOS code-signing identity is available, the installer uses it so privacy
+permissions such as Bluetooth survive binary updates. Set
+`STREAMDECKD_CODESIGN_IDENTITY` to choose a specific identity; otherwise the first
+valid identity reported by `security find-identity` is used, with ad-hoc signing
+only as a fallback. The app bundle declares the Bluetooth purpose string, and the
+daemon also embeds it for direct command-line execution. On first launch, keep
+the streamdeckd setup dialog open and allow Bluetooth in the macOS prompt. If the
+prompt was previously dismissed, enable `streamdeckd` under **System Settings →
+Privacy & Security → Bluetooth**. The permission remains attached to the signed
+app across subsequent installations.
 
 Installed files:
 
 ```text
 ~/Library/Application Support/streamdeckd/bin/{streamdeckd,streamdeckctl,streamdeck-alert}
+~/Applications/streamdeckd.app/
 ~/Library/Application Support/streamdeckd/config.toml
 ~/Library/Application Support/streamdeckd/state.json
 ~/Library/Application Support/streamdeckd/streamdeckd.sock   (0600)

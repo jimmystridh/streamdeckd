@@ -7,6 +7,62 @@ use streamdeck_core::integrations::application::{ApplicationInfo, CustomApplicat
 
 use crate::command::CommandRunner;
 
+#[cfg(target_os = "macos")]
+/// Runs daemon work beside AppKit's main event loop so macOS treats the process
+/// as the containing accessory application for privacy authorization.
+pub fn run_agent_application<F>(work: F) -> !
+where
+    F: FnOnce() -> std::process::ExitCode + Send + 'static,
+{
+    use dispatch2::DispatchQueue;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSAlert, NSApplication, NSApplicationActivationPolicy};
+    use objc2_core_bluetooth::{CBManager, CBManagerAuthorization};
+    use objc2_foundation::ns_string;
+
+    let main_thread =
+        MainThreadMarker::new().expect("application entry point must be the main thread");
+    let application = NSApplication::sharedApplication(main_thread);
+    let awaiting_bluetooth =
+        unsafe { CBManager::authorization_class() } == CBManagerAuthorization::NotDetermined;
+    application.setActivationPolicy(if awaiting_bluetooth {
+        NSApplicationActivationPolicy::Regular
+    } else {
+        NSApplicationActivationPolicy::Accessory
+    });
+    application.finishLaunching();
+    let bluetooth_alert = awaiting_bluetooth.then(|| {
+        let alert = NSAlert::new(main_thread);
+        alert.setMessageText(ns_string!("Enable Bluetooth for streamdeckd"));
+        alert.setInformativeText(ns_string!(
+            "Keep this window open, then allow Bluetooth in the macOS prompt so streamdeckd can connect to your WalkingPad."
+        ));
+        alert
+    });
+
+    DispatchQueue::main().exec_async(move || {
+        std::thread::Builder::new()
+            .name("streamdeckd-main".to_string())
+            .spawn(move || {
+                let code = work();
+                std::process::exit(if code == std::process::ExitCode::SUCCESS {
+                    0
+                } else {
+                    1
+                });
+            })
+            .expect("could not start the daemon worker thread");
+    });
+
+    if let Some(alert) = bluetooth_alert {
+        alert.runModal();
+        application.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    }
+
+    application.run();
+    std::process::exit(0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApplicationControl {
     Activate,

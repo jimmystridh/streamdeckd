@@ -7,7 +7,7 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>__PREFIX__/bin/streamdeckd</string>
+    <string>__APP__/Contents/MacOS/streamdeckd</string>
     <string>--log-level</string>
     <string>info</string>
   </array>

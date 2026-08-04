@@ -86,6 +86,14 @@ fn main() -> std::process::ExitCode {
         };
     }
 
+    #[cfg(target_os = "macos")]
+    streamdeck_macos::application::run_agent_application(move || run(cli));
+
+    #[cfg(not(target_os = "macos"))]
+    run(cli)
+}
+
+fn run(cli: Cli) -> std::process::ExitCode {
     // A small pool: this daemon is I/O bound and must stay under 80 MiB.
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
