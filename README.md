@@ -207,10 +207,12 @@ the configured serial returns, then restores brightness and repaints all 15 keys
 
 WalkingPad support uses `walkingpad` 0.2.0. The daemon holds the crate's shared
 device-store command lock for its lifetime, opens the saved device identifier
-before scanning, maintains one BLE connection, and retries disconnects with
-bounded exponential backoff. This intentionally prevents the WalkingPad CLI and
-the daemon from sending belt commands concurrently. Telemetry is polled roughly
-every 900 ms; controls disable as soon as the connection or status is not fresh.
+before scanning, maintains one BLE connection, and reconnects with bounded
+exponential backoff. BLE cleanup is limited to three seconds and cannot block a
+connection failure from reaching the UI or prevent later reconnect attempts.
+This intentionally prevents the WalkingPad CLI and the daemon from sending belt
+commands concurrently. Telemetry is polled roughly every 900 ms; controls
+disable as soon as the connection or status is not fresh.
 
 Daily WalkingPad totals persist integer hundredths of a kilometre, steps, elapsed
 seconds, and the last observed run counters. Only positive deltas between

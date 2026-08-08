@@ -17,6 +17,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(900);
+const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 60_000;
 
@@ -60,10 +61,24 @@ impl WalkingPadService {
         events: mpsc::UnboundedSender<RuntimeEvent>,
         backend: Box<dyn PadBackend>,
     ) -> Self {
+        Self::spawn_with_backend_and_disconnect_timeout(events, backend, DISCONNECT_TIMEOUT)
+    }
+
+    fn spawn_with_backend_and_disconnect_timeout(
+        events: mpsc::UnboundedSender<RuntimeEvent>,
+        backend: Box<dyn PadBackend>,
+        disconnect_timeout: Duration,
+    ) -> Self {
         let (urgent, urgent_rx) = mpsc::unbounded_channel();
         let (normal, normal_rx) = mpsc::unbounded_channel();
         let controller = Arc::new(WalkingPadController { urgent, normal });
-        let task = tokio::spawn(run(backend, urgent_rx, normal_rx, events));
+        let task = tokio::spawn(run(
+            backend,
+            urgent_rx,
+            normal_rx,
+            events,
+            disconnect_timeout,
+        ));
         Self { controller, task }
     }
 
@@ -301,6 +316,7 @@ async fn run(
     mut urgent: mpsc::UnboundedReceiver<UrgentRequest>,
     mut normal: mpsc::UnboundedReceiver<WalkingPadRequest>,
     events: mpsc::UnboundedSender<RuntimeEvent>,
+    disconnect_timeout: Duration,
 ) {
     let mut backoff = Backoff::new(RECONNECT_BASE_MS, RECONNECT_MAX_MS);
     let mut last_logged_error = None;
@@ -333,33 +349,46 @@ async fn run(
             };
 
         let (exit, was_healthy) = run_connected(&mut *pad, &mut urgent, &mut normal, &events).await;
-        if let Err(error) = pad.disconnect().await {
-            tracing::debug!(
-                component = "walkingpad",
-                error = %error,
-                "WalkingPad disconnect failed"
+        if let ConnectedExit::Reconnect(error) = &exit {
+            if was_healthy {
+                backoff.reset();
+                last_logged_error = None;
+            }
+            publish_connection(
+                &events,
+                WalkingPadConnection::Disconnected,
+                Some(error.clone()),
             );
+            log_connect_error(&mut last_logged_error, error);
         }
+
+        disconnect_bounded(pad, disconnect_timeout).await;
 
         match exit {
             ConnectedExit::Shutdown => return,
-            ConnectedExit::Reconnect(error) => {
-                if was_healthy {
-                    backoff.reset();
-                    last_logged_error = None;
-                }
-                publish_connection(
-                    &events,
-                    WalkingPadConnection::Disconnected,
-                    Some(error.clone()),
-                );
-                log_connect_error(&mut last_logged_error, &error);
+            ConnectedExit::Reconnect(_) => {
                 let delay = Duration::from_millis(backoff.fail());
                 if wait_disconnected(&mut urgent, &mut normal, &events, delay).await {
                     return;
                 }
             }
         }
+    }
+}
+
+async fn disconnect_bounded(pad: Box<dyn PadConnection>, timeout: Duration) {
+    match tokio::time::timeout(timeout, pad.disconnect()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(
+            component = "walkingpad",
+            error = %error,
+            "WalkingPad disconnect failed; continuing reconnect"
+        ),
+        Err(_) => tracing::warn!(
+            component = "walkingpad",
+            ?timeout,
+            "WalkingPad disconnect timed out; continuing reconnect"
+        ),
     }
 }
 
@@ -681,6 +710,7 @@ fn log_connect_error(last: &mut Option<String>, error: &str) {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use tokio::sync::Notify;
@@ -694,6 +724,22 @@ mod tests {
     #[async_trait]
     impl PadBackend for FakeBackend {
         async fn connect(&mut self) -> Result<Box<dyn PadConnection>, ConnectFailure> {
+            self.connection
+                .take()
+                .map(|connection| Box::new(connection) as Box<dyn PadConnection>)
+                .ok_or_else(|| ConnectFailure::unavailable("no more fake connections"))
+        }
+    }
+
+    struct RetryBackend {
+        connection: Option<FakeConnection>,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl PadBackend for RetryBackend {
+        async fn connect(&mut self) -> Result<Box<dyn PadConnection>, ConnectFailure> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
             self.connection
                 .take()
                 .map(|connection| Box::new(connection) as Box<dyn PadConnection>)
@@ -719,6 +765,7 @@ mod tests {
         trace: Arc<Mutex<Vec<String>>>,
         statuses: Arc<Mutex<VecDeque<WalkingPadTelemetry>>>,
         block_status: Option<Arc<Notify>>,
+        block_disconnect: Option<Arc<Notify>>,
     }
 
     #[async_trait]
@@ -757,6 +804,9 @@ mod tests {
 
         async fn disconnect(self: Box<Self>) -> Result<(), String> {
             self.trace.lock().unwrap().push("disconnect".to_string());
+            if let Some(notify) = &self.block_disconnect {
+                notify.notified().await;
+            }
             Ok(())
         }
     }
@@ -799,6 +849,7 @@ mod tests {
             trace: Arc::clone(&trace),
             statuses: Arc::new(Mutex::new(VecDeque::from([status(0)]))),
             block_status: None,
+            block_disconnect: None,
         };
         let (events, _receiver) = mpsc::unbounded_channel();
         let service = WalkingPadService::spawn_with_backend(
@@ -826,6 +877,7 @@ mod tests {
             trace: Arc::clone(&trace),
             statuses: Arc::new(Mutex::new(VecDeque::from([standby_status()]))),
             block_status: None,
+            block_disconnect: None,
         };
         let (events, _receiver) = mpsc::unbounded_channel();
         let service = WalkingPadService::spawn_with_backend(
@@ -861,6 +913,7 @@ mod tests {
             trace: Arc::clone(&trace),
             statuses: Arc::new(Mutex::new(VecDeque::from([status(30)]))),
             block_status: Some(blocker),
+            block_disconnect: None,
         };
         let (events, _receiver) = mpsc::unbounded_channel();
         let service = WalkingPadService::spawn_with_backend(
@@ -900,12 +953,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hanging_disconnect_publishes_failure_and_allows_reconnect() {
+        let trace = Arc::new(Mutex::new(Vec::new()));
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let connection = FakeConnection {
+            trace: Arc::clone(&trace),
+            statuses: Arc::new(Mutex::new(VecDeque::from([status(0)]))),
+            block_status: None,
+            block_disconnect: Some(Arc::new(Notify::new())),
+        };
+        let (events, mut receiver) = mpsc::unbounded_channel();
+        let service = WalkingPadService::spawn_with_backend_and_disconnect_timeout(
+            events,
+            Box::new(RetryBackend {
+                connection: Some(connection),
+                attempts: Arc::clone(&attempts),
+            }),
+            Duration::from_millis(20),
+        );
+
+        wait_for(&trace, "poll").await;
+        service
+            .controller
+            .send(WalkingPadRequest::Start)
+            .expect("start queued");
+        wait_for(&trace, "disconnect").await;
+
+        let mut failure_was_published_before_disconnect = false;
+        while let Ok(event) = receiver.try_recv() {
+            if matches!(
+                event,
+                RuntimeEvent::WalkingPad(WalkingPadUpdate::Connection {
+                    state: WalkingPadConnection::Disconnected,
+                    error: Some(error),
+                }) if error == "status failed: no fake status"
+            ) {
+                failure_was_published_before_disconnect = true;
+                break;
+            }
+        }
+        assert!(failure_was_published_before_disconnect);
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while attempts.load(Ordering::SeqCst) < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("reconnect attempt after disconnect timeout");
+
+        service.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn stopped_belts_reject_speed_without_writing() {
         let trace = Arc::new(Mutex::new(Vec::new()));
         let connection = FakeConnection {
             trace: Arc::clone(&trace),
             statuses: Arc::new(Mutex::new(VecDeque::from([status(0), status(0)]))),
             block_status: None,
+            block_disconnect: None,
         };
         let (events, mut receiver) = mpsc::unbounded_channel();
         let service = WalkingPadService::spawn_with_backend(
