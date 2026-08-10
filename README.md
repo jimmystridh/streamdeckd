@@ -210,6 +210,11 @@ device-store command lock for its lifetime, opens the saved device identifier
 before scanning, maintains one BLE connection, and reconnects with bounded
 exponential backoff. BLE cleanup is limited to three seconds and cannot block a
 connection failure from reaching the UI or prevent later reconnect attempts.
+Opening the BLE connection resets discovery backoff before the first status
+poll, so a cold-powered pad whose first handshake times out is retried after one
+second. While the pad is powered off, discovery scans run for 60 seconds at a
+time with at most five seconds between attempts, so powering it back on is
+noticed without restarting the daemon.
 This intentionally prevents the WalkingPad CLI and the daemon from sending belt
 commands concurrently. Telemetry is polled roughly every 900 ms; controls
 disable as soon as the connection or status is not fresh.

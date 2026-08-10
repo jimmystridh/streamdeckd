@@ -14,12 +14,12 @@ use walkingpad::{CommandLock, DeviceStore, Mode, SavedDevice, Speed, WalkingPad}
 use crate::runtime::RuntimeEvent;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(8);
+const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(900);
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const RECONNECT_BASE_MS: u64 = 1_000;
-const RECONNECT_MAX_MS: u64 = 60_000;
+const RECONNECT_MAX_MS: u64 = 5_000;
 
 pub trait WalkingPadCommander: Send + Sync {
     fn send(&self, request: WalkingPadRequest) -> Result<(), String>;
@@ -326,6 +326,7 @@ async fn run(
         let mut pad =
             match connect_preemptible(&mut *backend, &mut urgent, &mut normal, &events).await {
                 ConnectOutcome::Connected(pad) => {
+                    reset_connect_backoff(&mut backoff);
                     publish_connection(&events, WalkingPadConnection::Connected, None);
                     tracing::debug!(component = "walkingpad", "WalkingPad BLE connection opened");
                     pad
@@ -351,7 +352,6 @@ async fn run(
         let (exit, was_healthy) = run_connected(&mut *pad, &mut urgent, &mut normal, &events).await;
         if let ConnectedExit::Reconnect(error) = &exit {
             if was_healthy {
-                backoff.reset();
                 last_logged_error = None;
             }
             publish_connection(
@@ -374,6 +374,10 @@ async fn run(
             }
         }
     }
+}
+
+fn reset_connect_backoff(backoff: &mut Backoff) {
+    backoff.reset();
 }
 
 async fn disconnect_bounded(pad: Box<dyn PadConnection>, timeout: Duration) {
@@ -716,6 +720,18 @@ mod tests {
     use tokio::sync::Notify;
 
     use super::*;
+
+    #[test]
+    fn a_ble_open_resets_offline_backoff_before_the_first_status_poll() {
+        let mut backoff = Backoff::new(RECONNECT_BASE_MS, RECONNECT_MAX_MS);
+        while backoff.current_delay_ms() < RECONNECT_MAX_MS {
+            backoff.fail();
+        }
+
+        reset_connect_backoff(&mut backoff);
+
+        assert_eq!(backoff.fail(), RECONNECT_BASE_MS);
+    }
 
     struct FakeBackend {
         connection: Option<FakeConnection>,
