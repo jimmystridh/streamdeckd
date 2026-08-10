@@ -38,7 +38,7 @@ rustybuzz = "0.20"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 regex = "1"
 clap = { version = "4", features = ["derive"] }
-walkingpad = { version = "0.2.0", default-features = false, features = ["store"] }
+walkingpad = { version = "0.3.0", git = "https://github.com/jimmystridh/walkingpad-rs.git", rev = "8cdb6959b9dfcac4d0067b21440349b02973a3f0", default-features = false, features = ["store"] }
 
 [profile.release]
 lto = "thin"

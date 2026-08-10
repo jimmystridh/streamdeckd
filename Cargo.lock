@@ -2723,9 +2723,8 @@ dependencies = [
 
 [[package]]
 name = "walkingpad"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8101d6dd18b5ee900766fc6471fbefc414587e3241dbe13eab5706eef8e59d91"
+version = "0.3.0"
+source = "git+https://github.com/jimmystridh/walkingpad-rs.git?rev=8cdb6959b9dfcac4d0067b21440349b02973a3f0#8cdb6959b9dfcac4d0067b21440349b02973a3f0"
 dependencies = [
  "atomic-write-file",
  "bluest",

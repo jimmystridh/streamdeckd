@@ -1654,6 +1654,8 @@ fn walkingpad_start(world: &WorldView) -> KeyView {
             } else {
                 "DEVICE START SPEED"
             }
+        } else if world.walkingpad.connection == WalkingPadConnection::Faulted {
+            "CHECK BELT DISPLAY"
         } else if !fresh {
             "WAIT FOR STATUS"
         } else if !stopped {
@@ -1690,6 +1692,7 @@ fn walkingpad_stop(world: &WorldView) -> KeyView {
             .status(KeyStatus::Alert);
     }
     let connected = world.walkingpad.connection == WalkingPadConnection::Connected;
+    let faulted = world.walkingpad.connection == WalkingPadConnection::Faulted;
     let fresh = world
         .walkingpad
         .has_fresh_status(world.now.timestamp_millis());
@@ -1699,13 +1702,15 @@ fn walkingpad_stop(world: &WorldView) -> KeyView {
         .as_ref()
         .is_some_and(WalkingPadTelemetry::is_moving);
     let another_command_pending = world.walkingpad.pending.is_some();
-    let enabled = connected && (another_command_pending || !fresh || moving);
+    let enabled = faulted || connected && (another_command_pending || !fresh || moving);
     KeyView::solid(theme::WALKINGPAD_STOP)
         .glyph(Icon::Cross)
         .header("STOP")
         .value(if enabled { "HALT" } else { "STOPPED" }, 22.0)
         .footer(if another_command_pending {
             "CANCEL COMMAND"
+        } else if faulted {
+            "EMERGENCY HALT"
         } else if moving {
             "STAY READY"
         } else if connected && fresh {
@@ -1904,6 +1909,7 @@ fn walkingpad_daily(world: &WorldView, metric: WalkingPadMetric) -> KeyView {
 fn walkingpad_connection_label(world: &WorldView) -> (&'static str, KeyStatus) {
     match world.walkingpad.connection {
         WalkingPadConnection::Locked => ("LOCKED", KeyStatus::Error),
+        WalkingPadConnection::Faulted => ("FAULT", KeyStatus::Error),
         WalkingPadConnection::Connecting => ("CONNECTING", KeyStatus::Loading),
         WalkingPadConnection::Disconnected => ("DISCONNECTED", KeyStatus::Disabled),
         WalkingPadConnection::Connected
@@ -1922,7 +1928,9 @@ fn walkingpad_connection_label(world: &WorldView) -> (&'static str, KeyStatus) {
 }
 
 fn walkingpad_telemetry_status(world: &WorldView) -> KeyStatus {
-    if world
+    if world.walkingpad.connection == WalkingPadConnection::Faulted {
+        KeyStatus::Error
+    } else if world
         .walkingpad
         .has_fresh_status(world.now.timestamp_millis())
     {
@@ -3071,6 +3079,20 @@ mod tests {
         let disconnected = view(Tile::WalkingPadConnection, &world);
         assert_eq!(disconnected.value.expect("state").text, "DISCONNECTED");
         assert_eq!(disconnected.status, KeyStatus::Disabled);
+
+        world.walkingpad.connection = WalkingPadConnection::Faulted;
+        world.walkingpad.connection_error = Some("motion counters froze".into());
+        let faulted = view(Tile::WalkingPadConnection, &world);
+        assert_eq!(faulted.value.expect("state").text, "FAULT");
+        assert_eq!(faulted.status, KeyStatus::Error);
+        assert_eq!(
+            view(Tile::WalkingPadStart, &world)
+                .footer_center
+                .expect("start footer")
+                .text,
+            "CHECK BELT DISPLAY"
+        );
+        assert_eq!(view(Tile::WalkingPadStop, &world).status, KeyStatus::Ok);
     }
 
     #[test]

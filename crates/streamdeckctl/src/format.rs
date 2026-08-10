@@ -133,6 +133,27 @@ fn print_status(data: &serde_json::Value) {
         println!();
     }
 
+    if let Some(walkingpad) = data.get("walkingpad") {
+        let connection = walkingpad
+            .get("connection")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown");
+        let speed = walkingpad
+            .get("speed_tenths")
+            .and_then(serde_json::Value::as_u64)
+            .map(|tenths| format!(", {:.1} km/h", tenths as f64 / 10.0))
+            .unwrap_or_default();
+        let age = walkingpad
+            .get("status_age_seconds")
+            .and_then(serde_json::Value::as_u64)
+            .map(|seconds| format!(", status {} ago", duration(seconds)))
+            .unwrap_or_default();
+        println!("walkingpad    {connection}{speed}{age}");
+        if let Some(error) = walkingpad.get("error").and_then(serde_json::Value::as_str) {
+            println!("  fault       {error}");
+        }
+    }
+
     if let Some(integrations) = data
         .get("integrations")
         .and_then(serde_json::Value::as_object)

@@ -1405,6 +1405,32 @@ impl Runtime {
             Utc::now().timestamp_millis(),
             self.state.timezone,
         );
+        let walkingpad = serde_json::json!({
+            "connection": format!("{:?}", self.state.walkingpad.connection).to_lowercase(),
+            "error": self.state.walkingpad.connection_error.as_deref(),
+            "status_age_seconds": self.state.walkingpad
+                .status_age_ms(Utc::now().timestamp_millis())
+                .map(|age| age / 1_000),
+            "speed_tenths": self.state.walkingpad.telemetry
+                .as_ref()
+                .map(|status| status.speed_tenths),
+            "target_speed_tenths": self.state.walkingpad.telemetry
+                .as_ref()
+                .map(|status| status.target_speed_tenths),
+            "belt_state": self.state.walkingpad.telemetry
+                .as_ref()
+                .map(|status| status.belt_state),
+            "mode": self.state.walkingpad.telemetry
+                .as_ref()
+                .map(|status| format!("{:?}", status.mode).to_lowercase()),
+            "quick_speeds_tenths": self.state.persistent.walkingpad_quick_speeds,
+            "today": {
+                "date": self.state.persistent.walkingpad.date,
+                "distance_hundredths": self.state.persistent.walkingpad.distance_hundredths,
+                "steps": self.state.persistent.walkingpad.steps,
+                "elapsed_seconds": self.state.persistent.walkingpad.elapsed_seconds,
+            },
+        });
 
         serde_json::json!({
             "uptime_seconds": self.metrics.uptime_seconds(),
@@ -1485,22 +1511,7 @@ impl Runtime {
                     .map(|microphone| microphone.label.as_str())
                     .collect::<Vec<_>>(),
             },
-            "walkingpad": {
-                "connection": format!("{:?}", self.state.walkingpad.connection).to_lowercase(),
-                "status_age_seconds": self.state.walkingpad
-                    .status_age_ms(Utc::now().timestamp_millis())
-                    .map(|age| age / 1_000),
-                "speed_tenths": self.state.walkingpad.telemetry
-                    .as_ref()
-                    .map(|status| status.speed_tenths),
-                "quick_speeds_tenths": self.state.persistent.walkingpad_quick_speeds,
-                "today": {
-                    "date": self.state.persistent.walkingpad.date,
-                    "distance_hundredths": self.state.persistent.walkingpad.distance_hundredths,
-                    "steps": self.state.persistent.walkingpad.steps,
-                    "elapsed_seconds": self.state.persistent.walkingpad.elapsed_seconds,
-                },
-            },
+            "walkingpad": walkingpad,
         })
     }
 

@@ -14,6 +14,7 @@ pub enum WalkingPadConnection {
     Disconnected,
     Connecting,
     Connected,
+    Faulted,
     Locked,
 }
 
@@ -148,6 +149,9 @@ impl WalkingPadState {
         if self.pending.is_some() {
             return Err("COMMAND BUSY");
         }
+        if self.connection == WalkingPadConnection::Faulted {
+            return Err("WALKINGPAD FAULT");
+        }
         if self.connection != WalkingPadConnection::Connected {
             return Err("DISCONNECTED");
         }
@@ -174,7 +178,13 @@ impl WalkingPadState {
         if self.pending.is_some() && command != WalkingPadCommand::Stop {
             return Err("COMMAND BUSY");
         }
-        if self.connection != WalkingPadConnection::Connected {
+        if self.connection == WalkingPadConnection::Faulted && command != WalkingPadCommand::Stop {
+            return Err("WALKINGPAD FAULT");
+        }
+        if self.connection != WalkingPadConnection::Connected
+            && !(self.connection == WalkingPadConnection::Faulted
+                && command == WalkingPadCommand::Stop)
+        {
             return Err("DISCONNECTED");
         }
 
@@ -220,7 +230,14 @@ impl WalkingPadState {
         self.connection_error = error;
         if connection != WalkingPadConnection::Connected {
             if let Some(pending) = self.pending.take() {
-                self.reject(pending.source, "CONNECTION LOST");
+                self.reject(
+                    pending.source,
+                    if connection == WalkingPadConnection::Faulted {
+                        "WALKINGPAD FAULT"
+                    } else {
+                        "CONNECTION LOST"
+                    },
+                );
             }
         }
     }
@@ -257,8 +274,10 @@ impl WalkingPadState {
         }
         self.telemetry = Some(telemetry);
         self.last_status_at_ms = Some(received_at_ms);
-        self.connection = WalkingPadConnection::Connected;
-        self.connection_error = None;
+        if self.connection != WalkingPadConnection::Faulted {
+            self.connection = WalkingPadConnection::Connected;
+            self.connection_error = None;
+        }
     }
 
     pub fn clear_feedback(&mut self) {
@@ -501,6 +520,37 @@ mod tests {
         stopped.last_status_at_ms = Some(0);
         assert_eq!(
             stopped.prepare(WalkingPadCommand::Stop, 10_000),
+            Ok(Some(WalkingPadRequest::Stop))
+        );
+    }
+
+    #[test]
+    fn a_fault_interlock_survives_fresh_status_and_blocks_motion_commands() {
+        let mut state = WalkingPadState {
+            connection: WalkingPadConnection::Faulted,
+            connection_error: Some("motion counters froze".into()),
+            telemetry: Some(telemetry(34)),
+            last_status_at_ms: Some(1_000),
+            ..WalkingPadState::default()
+        };
+
+        state.apply_status(telemetry(34), 2_000);
+
+        assert_eq!(state.connection, WalkingPadConnection::Faulted);
+        assert_eq!(
+            state.connection_error.as_deref(),
+            Some("motion counters froze")
+        );
+        assert_eq!(
+            state.prepare(WalkingPadCommand::SetSpeed(42), 2_000),
+            Err("WALKINGPAD FAULT")
+        );
+        assert_eq!(
+            state.prepare(WalkingPadCommand::Start, 2_000),
+            Err("WALKINGPAD FAULT")
+        );
+        assert_eq!(
+            state.prepare(WalkingPadCommand::Stop, 2_000),
             Ok(Some(WalkingPadRequest::Stop))
         );
     }

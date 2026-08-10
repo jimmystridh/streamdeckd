@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use streamdeck_core::deadline::Backoff;
@@ -9,7 +9,7 @@ use streamdeck_core::integrations::walkingpad::{
 };
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-use walkingpad::{CommandLock, DeviceStore, Mode, SavedDevice, Speed, WalkingPad};
+use walkingpad::{CommandLock, DeviceStore, Mode, PacketRecord, SavedDevice, Speed, WalkingPad};
 
 use crate::runtime::RuntimeEvent;
 
@@ -17,6 +17,7 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 const STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const POLL_INTERVAL: Duration = Duration::from_millis(900);
+const MOTION_PROGRESS_TIMEOUT: Duration = Duration::from_secs(5);
 const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 5_000;
@@ -161,6 +162,9 @@ trait PadConnection: Send {
     async fn halt(&mut self) -> Result<(), String>;
     async fn set_speed(&mut self, tenths: u8) -> Result<(), String>;
     async fn status(&mut self, timeout: Duration) -> Result<WalkingPadTelemetry, String>;
+    fn packet_history(&self) -> Vec<PacketRecord> {
+        Vec::new()
+    }
     async fn disconnect(self: Box<Self>) -> Result<(), String>;
 }
 
@@ -291,6 +295,10 @@ impl PadConnection for RealConnection {
             .map_err(|error| error.to_string())
     }
 
+    fn packet_history(&self) -> Vec<PacketRecord> {
+        self.pad.packet_history()
+    }
+
     async fn disconnect(self: Box<Self>) -> Result<(), String> {
         self.pad
             .disconnect()
@@ -302,6 +310,57 @@ impl PadConnection for RealConnection {
 enum ConnectedExit {
     Reconnect(String),
     Shutdown,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MotionObservation {
+    Healthy,
+    FaultDetected(Duration),
+    FaultContinues,
+    Recovered,
+}
+
+#[derive(Debug, Default)]
+struct MotionWatchdog {
+    counters: Option<WalkingPadCounters>,
+    last_progress: Option<Instant>,
+    faulted: bool,
+}
+
+impl MotionWatchdog {
+    fn observe(&mut self, status: &WalkingPadTelemetry, observed_at: Instant) -> MotionObservation {
+        if !status.is_moving() {
+            return self.reset(status.counters, observed_at);
+        }
+
+        if self.counters != Some(status.counters) {
+            return self.reset(status.counters, observed_at);
+        }
+
+        let last_progress = self.last_progress.get_or_insert(observed_at);
+        let frozen_for = observed_at.saturating_duration_since(*last_progress);
+        if frozen_for < MOTION_PROGRESS_TIMEOUT {
+            return MotionObservation::Healthy;
+        }
+        if self.faulted {
+            MotionObservation::FaultContinues
+        } else {
+            self.faulted = true;
+            MotionObservation::FaultDetected(frozen_for)
+        }
+    }
+
+    fn reset(&mut self, counters: WalkingPadCounters, observed_at: Instant) -> MotionObservation {
+        let recovered = self.faulted;
+        self.counters = Some(counters);
+        self.last_progress = Some(observed_at);
+        self.faulted = false;
+        if recovered {
+            MotionObservation::Recovered
+        } else {
+            MotionObservation::Healthy
+        }
+    }
 }
 
 enum ConnectOutcome {
@@ -434,6 +493,8 @@ async fn run_connected(
     events: &mpsc::UnboundedSender<RuntimeEvent>,
 ) -> (ConnectedExit, bool) {
     let mut last_status: Option<(WalkingPadTelemetry, Instant)> = None;
+    let mut motion_watchdog = MotionWatchdog::default();
+    let mut motion_fault: Option<String> = None;
     let mut next_poll = Instant::now();
     let mut was_healthy = false;
 
@@ -455,6 +516,7 @@ async fn run_connected(
                         pad,
                         request,
                         last_status.as_ref(),
+                        motion_fault.as_deref(),
                         urgent,
                         events,
                     ).await {
@@ -471,11 +533,52 @@ async fn run_connected(
                             tracing::info!(component = "walkingpad", "WalkingPad connected");
                             was_healthy = true;
                         }
-                        last_status = Some((status.clone(), Instant::now()));
+                        let observed_at = Instant::now();
+                        let motion_observation = motion_watchdog.observe(&status, observed_at);
+                        last_status = Some((status.clone(), observed_at));
                         let _ = events.send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Status {
-                            telemetry: status,
+                            telemetry: status.clone(),
                             received_at_ms: chrono::Utc::now().timestamp_millis(),
                         }));
+                        match motion_observation {
+                            MotionObservation::FaultDetected(frozen_for) => {
+                                let error = format!(
+                                    "controller reports {:.1} km/h but motion counters have not advanced for {:.1}s; check the WalkingPad display for a protection code",
+                                    f32::from(status.speed_tenths) / 10.0,
+                                    frozen_for.as_secs_f32(),
+                                );
+                                tracing::warn!(
+                                    component = "walkingpad",
+                                    error,
+                                    belt_state = status.belt_state,
+                                    speed_tenths = status.speed_tenths,
+                                    distance_hundredths = status.counters.distance_hundredths,
+                                    elapsed_seconds = status.counters.elapsed_seconds,
+                                    steps = status.counters.steps,
+                                    packet_history = %format_packet_history(pad.packet_history()),
+                                    "WalkingPad motion telemetry froze; entering fault interlock"
+                                );
+                                motion_fault = Some(error.clone());
+                                publish_connection(
+                                    events,
+                                    WalkingPadConnection::Faulted,
+                                    Some(error),
+                                );
+                            }
+                            MotionObservation::Recovered => {
+                                tracing::info!(
+                                    component = "walkingpad",
+                                    "WalkingPad motion telemetry recovered; clearing fault interlock"
+                                );
+                                motion_fault = None;
+                                publish_connection(
+                                    events,
+                                    WalkingPadConnection::Connected,
+                                    None,
+                                );
+                            }
+                            MotionObservation::Healthy | MotionObservation::FaultContinues => {}
+                        }
                     }
                     PollOutcome::Status(Err(error)) => {
                         return (
@@ -496,6 +599,7 @@ async fn run_connected(
                             pad,
                             request,
                             last_status.as_ref(),
+                            motion_fault.as_deref(),
                             urgent,
                             events,
                         ).await {
@@ -539,10 +643,11 @@ async fn execute_normal_preemptible(
     pad: &mut dyn PadConnection,
     request: WalkingPadRequest,
     last_status: Option<&(WalkingPadTelemetry, Instant)>,
+    motion_fault: Option<&str>,
     urgent: &mut mpsc::UnboundedReceiver<UrgentRequest>,
     events: &mpsc::UnboundedSender<RuntimeEvent>,
 ) -> Result<(), ConnectedExit> {
-    if let Err(error) = validate_motion_request(request, last_status) {
+    if let Err(error) = validate_motion_request(request, last_status, motion_fault) {
         publish_command_failure(events, request, error);
         return Ok(());
     }
@@ -586,20 +691,24 @@ async fn execute_normal_preemptible(
 fn validate_motion_request(
     request: WalkingPadRequest,
     last_status: Option<&(WalkingPadTelemetry, Instant)>,
-) -> Result<(), &'static str> {
+    motion_fault: Option<&str>,
+) -> Result<(), String> {
     if request == WalkingPadRequest::Stop {
         return Ok(());
     }
+    if let Some(error) = motion_fault {
+        return Err(format!("WALKINGPAD FAULT: {error}"));
+    }
     let Some((status, received)) = last_status else {
-        return Err("NO FRESH STATUS");
+        return Err("NO FRESH STATUS".into());
     };
     if received.elapsed() > Duration::from_millis(STATUS_STALE_AFTER_MS as u64) {
-        return Err("STATUS STALE");
+        return Err("STATUS STALE".into());
     }
     match request {
         WalkingPadRequest::Start if status.speed_tenths == 0 => Ok(()),
-        WalkingPadRequest::Start => Err("ALREADY MOVING"),
-        WalkingPadRequest::SetSpeed(_) if status.speed_tenths == 0 => Err("START FIRST"),
+        WalkingPadRequest::Start => Err("ALREADY MOVING".into()),
+        WalkingPadRequest::SetSpeed(_) if status.speed_tenths == 0 => Err("START FIRST".into()),
         WalkingPadRequest::SetSpeed(_) => Ok(()),
         WalkingPadRequest::Stop => Ok(()),
     }
@@ -698,6 +807,24 @@ fn publish_command_failure(
     }));
 }
 
+fn format_packet_history(records: Vec<PacketRecord>) -> String {
+    if records.is_empty() {
+        return "empty".to_string();
+    }
+    records
+        .into_iter()
+        .map(|record| {
+            let timestamp_ms = record
+                .observed_at
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            format!("{timestamp_ms}:{}:{}", record.direction, record.hex())
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn log_connect_error(last: &mut Option<String>, error: &str) {
     if last.as_deref() == Some(error) {
         tracing::debug!(
@@ -731,6 +858,74 @@ mod tests {
         reset_connect_backoff(&mut backoff);
 
         assert_eq!(backoff.fail(), RECONNECT_BASE_MS);
+    }
+
+    #[test]
+    fn frozen_running_counters_enter_the_fault_interlock_and_recover_on_progress() {
+        let mut watchdog = MotionWatchdog::default();
+        let started = Instant::now();
+        let frozen = status(34);
+
+        assert_eq!(
+            watchdog.observe(&frozen, started),
+            MotionObservation::Healthy
+        );
+        assert_eq!(
+            watchdog.observe(
+                &frozen,
+                started + MOTION_PROGRESS_TIMEOUT - Duration::from_millis(1),
+            ),
+            MotionObservation::Healthy
+        );
+        assert_eq!(
+            watchdog.observe(&frozen, started + MOTION_PROGRESS_TIMEOUT),
+            MotionObservation::FaultDetected(MOTION_PROGRESS_TIMEOUT)
+        );
+        assert_eq!(
+            watchdog.observe(
+                &frozen,
+                started + MOTION_PROGRESS_TIMEOUT + Duration::from_secs(1)
+            ),
+            MotionObservation::FaultContinues
+        );
+
+        let mut progressed = frozen;
+        progressed.counters.elapsed_seconds = 1;
+        assert_eq!(
+            watchdog.observe(
+                &progressed,
+                started + MOTION_PROGRESS_TIMEOUT + Duration::from_secs(2),
+            ),
+            MotionObservation::Recovered
+        );
+    }
+
+    #[test]
+    fn a_fault_blocks_start_and_speed_but_never_the_emergency_halt() {
+        let status = (status(34), Instant::now());
+
+        assert!(validate_motion_request(
+            WalkingPadRequest::Start,
+            Some(&status),
+            Some("motion counters froze"),
+        )
+        .expect_err("start blocked")
+        .contains("WALKINGPAD FAULT"));
+        assert!(validate_motion_request(
+            WalkingPadRequest::SetSpeed(42),
+            Some(&status),
+            Some("motion counters froze"),
+        )
+        .expect_err("speed blocked")
+        .contains("WALKINGPAD FAULT"));
+        assert_eq!(
+            validate_motion_request(
+                WalkingPadRequest::Stop,
+                Some(&status),
+                Some("motion counters froze"),
+            ),
+            Ok(())
+        );
     }
 
     struct FakeBackend {

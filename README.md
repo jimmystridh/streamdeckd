@@ -205,7 +205,7 @@ Stream Deck or OpenDeck first; `streamdeckd` never kills them for you.
 If the deck is unplugged, the daemon stays alive and checks once per second until
 the configured serial returns, then restores brightness and repaints all 15 keys.
 
-WalkingPad support uses `walkingpad` 0.2.0. The daemon holds the crate's shared
+WalkingPad support uses `walkingpad` 0.3.0. The daemon holds the crate's shared
 device-store command lock for its lifetime, opens the saved device identifier
 before scanning, maintains one BLE connection, and reconnects with bounded
 exponential backoff. BLE cleanup is limited to three seconds and cannot block a
@@ -217,7 +217,14 @@ time with at most five seconds between attempts, so powering it back on is
 noticed without restarting the daemon.
 This intentionally prevents the WalkingPad CLI and the daemon from sending belt
 commands concurrently. Telemetry is polled roughly every 900 ms; controls
-disable as soon as the connection or status is not fresh.
+disable as soon as the connection or status is not fresh. BLE notifications are
+captured continuously, including between polls, and a bounded raw-packet history
+is attached to warnings for malformed packets, notification failures, and frozen
+motion telemetry. If the controller reports a moving belt while all motion
+counters remain unchanged for five seconds, the deck enters `FAULT`, disables
+Start and speed changes, and asks the user to check the belt's display. Emergency
+Halt remains available, and normal controls recover only after counters advance
+or the controller reports a stopped belt.
 
 Daily WalkingPad totals persist integer hundredths of a kilometre, steps, elapsed
 seconds, and the last observed run counters. Only positive deltas between
