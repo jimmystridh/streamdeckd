@@ -791,30 +791,37 @@ async fn walkingpad_dashboard_controls_reach_the_controller_and_stats_page() {
     harness.settle().await;
 
     harness.press(3, 3).await;
+    assert_eq!(harness.page(), PageId::WalkingPadSpeed4);
+    assert_eq!(
+        harness.walkingpad.requests(),
+        vec![WalkingPadRequest::SetSpeed(32)]
+    );
+
+    harness.press(2, 3).await;
     assert_eq!(
         harness.walkingpad.requests(),
         vec![
             WalkingPadRequest::SetSpeed(32),
-            WalkingPadRequest::SetSpeed(34)
+            WalkingPadRequest::SetSpeed(42)
         ]
     );
 
-    harness.press(1, 4).await;
+    harness.press(1, 5).await;
     assert_eq!(
         harness.walkingpad.requests().last(),
         Some(&WalkingPadRequest::Stop),
         "stop must bypass the pending speed command"
     );
 
+    harness.press(1, 2).await;
+    assert_eq!(harness.page(), PageId::WalkingPad);
     harness.press(1, 5).await;
     assert_eq!(harness.page(), PageId::WalkingPadStats);
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn holding_a_walkingpad_speed_preset_saves_its_active_target_durably() {
+async fn walkingpad_speed_bands_open_exact_tenth_selectors_with_back_and_home() {
     let mut harness = Harness::new(PageId::WalkingPad).await;
-    let mut telemetry = walkingpad_telemetry(34, 100, 1_000, 600);
-    telemetry.target_speed_tenths = 36;
     harness
         .events
         .send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Connection {
@@ -825,33 +832,28 @@ async fn holding_a_walkingpad_speed_preset_saves_its_active_target_durably() {
     harness
         .events
         .send(RuntimeEvent::WalkingPad(WalkingPadUpdate::Status {
-            telemetry,
+            telemetry: walkingpad_telemetry(34, 100, 1_000, 600),
             received_at_ms: Utc::now().timestamp_millis(),
         }))
         .expect("status sent");
     harness.settle().await;
 
-    harness.hold(3, 1).await;
-
-    assert_eq!(
-        harness.runtime.state().persistent.walkingpad_quick_speeds[0],
-        36
-    );
-    assert!(
-        harness.walkingpad.requests().is_empty(),
-        "saving a preset must not send a belt command"
-    );
-    let saved = harness
-        .store
-        .load(PomodoroState::default())
-        .expect("saved preset");
-    assert_eq!(saved.walkingpad_quick_speeds[0], 36);
-
     harness.press(3, 1).await;
+    assert_eq!(harness.page(), PageId::WalkingPadSpeed2);
+    assert!(harness.walkingpad.requests().is_empty());
+
+    harness.press(2, 2).await;
     assert_eq!(
         harness.walkingpad.requests(),
-        vec![WalkingPadRequest::SetSpeed(36)]
+        vec![WalkingPadRequest::SetSpeed(21)]
     );
+
+    harness.press(1, 2).await;
+    assert_eq!(harness.page(), PageId::WalkingPad);
+    harness.press(3, 5).await;
+    assert_eq!(harness.page(), PageId::WalkingPadSpeed6);
+    harness.press(1, 1).await;
+    assert_eq!(harness.page(), PageId::Home);
 }
 
 #[tokio::test(flavor = "multi_thread")]

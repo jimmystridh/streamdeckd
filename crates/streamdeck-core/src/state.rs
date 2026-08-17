@@ -11,9 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::integrations::walkingpad::{
-    WalkingPadDailyTotals, DEFAULT_QUICK_SPEEDS_TENTHS, MAX_SPEED_TENTHS, MIN_SPEED_TENTHS,
-};
+use crate::integrations::walkingpad::WalkingPadDailyTotals;
 use crate::model::PageId;
 use crate::pomodoro::PomodoroState;
 
@@ -56,12 +54,6 @@ pub struct PersistentState {
     pub cached: CachedIntegrations,
     #[serde(default)]
     pub walkingpad: WalkingPadDailyTotals,
-    #[serde(default = "default_walkingpad_quick_speeds")]
-    pub walkingpad_quick_speeds: [u8; 5],
-}
-
-const fn default_walkingpad_quick_speeds() -> [u8; 5] {
-    DEFAULT_QUICK_SPEEDS_TENTHS
 }
 
 impl Default for PersistentState {
@@ -73,7 +65,6 @@ impl Default for PersistentState {
             input_volume_before_mute: 50,
             cached: CachedIntegrations::default(),
             walkingpad: WalkingPadDailyTotals::default(),
-            walkingpad_quick_speeds: DEFAULT_QUICK_SPEEDS_TENTHS,
         }
     }
 }
@@ -182,15 +173,6 @@ impl StateStore {
         let mut state = migrate(value, &self.path)?;
         state.pomodoro.normalize();
         state.input_volume_before_mute = state.input_volume_before_mute.min(100);
-        for (speed, fallback) in state
-            .walkingpad_quick_speeds
-            .iter_mut()
-            .zip(DEFAULT_QUICK_SPEEDS_TENTHS)
-        {
-            if !(MIN_SPEED_TENTHS..=MAX_SPEED_TENTHS).contains(speed) {
-                *speed = fallback;
-            }
-        }
         Ok(state)
     }
 
@@ -367,7 +349,6 @@ mod tests {
         assert_eq!(state.version, CURRENT_VERSION);
         assert_eq!(state.pomodoro.focus_minutes, 50);
         assert_eq!(state.active_page, PageId::Home);
-        assert_eq!(state.walkingpad_quick_speeds, DEFAULT_QUICK_SPEEDS_TENTHS);
     }
 
     #[test]
@@ -393,7 +374,6 @@ mod tests {
                 }),
                 last_observed_at_ms: Some(1_785_838_400_000),
             },
-            walkingpad_quick_speeds: [10, 20, 30, 40, 50],
             ..PersistentState::default()
         };
 
@@ -493,12 +473,34 @@ mod tests {
         assert_eq!(state.pomodoro.focus_minutes, 90);
         assert_eq!(state.pomodoro.cycle_focus_sessions, 4);
         assert_eq!(state.input_volume_before_mute, 100);
-        assert_eq!(state.walkingpad_quick_speeds, [26, 30, 34, 42, 5]);
         assert_eq!(
             state.walkingpad,
             WalkingPadDailyTotals::default(),
             "pre-WalkingPad version-one state must remain loadable"
         );
+    }
+
+    #[test]
+    fn retired_walkingpad_favorites_are_accepted_then_removed_on_save() {
+        let (_directory, store) = store();
+        fs::write(
+            store.path(),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": CURRENT_VERSION,
+                "activePage": "home",
+                "pomodoro": PomodoroState::default(),
+                "inputVolumeBeforeMute": 50,
+                "walkingpadQuickSpeeds": [26, 30, 34, 42, 45]
+            }))
+            .expect("json"),
+        )
+        .expect("write");
+
+        let state = store.load(PomodoroState::default()).expect("legacy state");
+        store.save(&state, Durability::Normal).expect("save");
+        let saved = fs::read_to_string(store.path()).expect("saved state");
+
+        assert!(!saved.contains("walkingpadQuickSpeeds"));
     }
 
     #[test]

@@ -464,6 +464,15 @@ fn walkingpad_stats_are_healthy() {
 }
 
 #[test]
+fn walkingpad_speed_selector_is_healthy() {
+    let mut renderer = Renderer::new().expect("renderer");
+    check(
+        "walkingpad-speed-2",
+        &sheet(&mut renderer, PageId::WalkingPadSpeed2, &healthy()),
+    );
+}
+
+#[test]
 fn home_is_loading() {
     let mut renderer = Renderer::new().expect("renderer");
     let world = WorldView::empty(now(), 1_000, Stockholm);

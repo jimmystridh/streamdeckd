@@ -41,11 +41,11 @@ state plus today's observed distance.
 
 **WalkingPad** — a control page with a prominent red halt-only Stop, one-packet
 Start while the belt is awake, an explicit wake-then-start sequence from standby,
-exact ±0.2 km/h adjustments, and presets for 2.6, 3.0, 3.4, 4.2, and 4.5 km/h.
-Start uses the belt's configured start speed; presets and adjustments cannot start
-a stopped belt. Hold any preset to replace it with the belt's current active
-target speed; custom presets persist across daemon restarts. A second statistics
-page shows live connection/staleness,
+exact ±0.2 km/h adjustments, and fixed 2 through 6 speed-range buttons. Each
+range opens a selector with every supported 0.1 km/h choice, Back, Home, live
+status, and emergency Halt; 6.x contains the protocol maximum of 6.0 km/h.
+Start uses the belt's configured start speed; selectors and adjustments cannot
+start a stopped belt. A second statistics page shows live connection/staleness,
 speed, session distance, steps and elapsed time, plus calendar-day distance,
 steps and walking time. Commands are serialized with status polling; Stop
 preempts a poll or another command and requests zero speed while keeping the
@@ -155,11 +155,11 @@ checked by the golden-image test suite.
   </tr>
   <tr>
     <th>WalkingPad statistics</th>
-    <th></th>
+    <th>WalkingPad speed selector</th>
   </tr>
   <tr>
     <td><img src="tests/golden/walkingpad-stats.png" alt="WalkingPad statistics page" width="374"></td>
-    <td></td>
+    <td><img src="tests/golden/walkingpad-speed-2.png" alt="WalkingPad 2.x km/h selector" width="374"></td>
   </tr>
 </table>
 

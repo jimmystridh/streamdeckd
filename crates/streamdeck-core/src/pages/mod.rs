@@ -32,8 +32,6 @@ pub enum Action {
     Dashboard(DashboardCommand),
     Wispr(WisprCommand),
     WalkingPad(WalkingPadCommand),
-    WalkingPadQuickSpeed(usize),
-    SaveWalkingPadQuickSpeed(usize),
     OpenGitHubMetric(MetricKind),
     /// Open the URL behind authored-pull-request tile `index`.
     OpenGitHubItem(usize),
@@ -150,6 +148,8 @@ pub enum Tile {
     Blank,
     /// Navigation key back to Home.
     HomeButton,
+    /// Navigation key back to the parent page.
+    BackButton,
     DashboardButton,
     QuickCapture,
     MixerSummary,
@@ -179,7 +179,8 @@ pub enum Tile {
     WalkingPadStop,
     WalkingPadSpeed,
     WalkingPadSpeedAdjust(WalkingPadCommand),
-    WalkingPadQuickSpeed(usize),
+    WalkingPadSpeedBand(u8),
+    WalkingPadSpeedChoice(u8),
     WalkingPadSession(WalkingPadMetric),
     WalkingPadDaily(WalkingPadMetric),
     WalkingPadStatsButton,
@@ -280,6 +281,11 @@ pub fn page(id: PageId) -> Page {
         PageId::Dashboard => dashboard(),
         PageId::WalkingPad => walkingpad(),
         PageId::WalkingPadStats => walkingpad_stats(),
+        PageId::WalkingPadSpeed2 => walkingpad_speed_selector(2),
+        PageId::WalkingPadSpeed3 => walkingpad_speed_selector(3),
+        PageId::WalkingPadSpeed4 => walkingpad_speed_selector(4),
+        PageId::WalkingPadSpeed5 => walkingpad_speed_selector(5),
+        PageId::WalkingPadSpeed6 => walkingpad_speed_selector(6),
     };
     Page { id, keys }
 }
@@ -441,17 +447,66 @@ fn walkingpad() -> Vec<KeyBinding> {
             Tile::WalkingPadSession(WalkingPadMetric::Elapsed),
             Acknowledge,
         ),
-        KeyBinding::new(3, 1, Tile::WalkingPadQuickSpeed(0), WalkingPadQuickSpeed(0))
-            .with_long(SaveWalkingPadQuickSpeed(0)),
-        KeyBinding::new(3, 2, Tile::WalkingPadQuickSpeed(1), WalkingPadQuickSpeed(1))
-            .with_long(SaveWalkingPadQuickSpeed(1)),
-        KeyBinding::new(3, 3, Tile::WalkingPadQuickSpeed(2), WalkingPadQuickSpeed(2))
-            .with_long(SaveWalkingPadQuickSpeed(2)),
-        KeyBinding::new(3, 4, Tile::WalkingPadQuickSpeed(3), WalkingPadQuickSpeed(3))
-            .with_long(SaveWalkingPadQuickSpeed(3)),
-        KeyBinding::new(3, 5, Tile::WalkingPadQuickSpeed(4), WalkingPadQuickSpeed(4))
-            .with_long(SaveWalkingPadQuickSpeed(4)),
+        KeyBinding::new(
+            3,
+            1,
+            Tile::WalkingPadSpeedBand(2),
+            Navigate(PageId::WalkingPadSpeed2),
+        ),
+        KeyBinding::new(
+            3,
+            2,
+            Tile::WalkingPadSpeedBand(3),
+            Navigate(PageId::WalkingPadSpeed3),
+        ),
+        KeyBinding::new(
+            3,
+            3,
+            Tile::WalkingPadSpeedBand(4),
+            Navigate(PageId::WalkingPadSpeed4),
+        ),
+        KeyBinding::new(
+            3,
+            4,
+            Tile::WalkingPadSpeedBand(5),
+            Navigate(PageId::WalkingPadSpeed5),
+        ),
+        KeyBinding::new(
+            3,
+            5,
+            Tile::WalkingPadSpeedBand(6),
+            Navigate(PageId::WalkingPadSpeed6),
+        ),
     ]
+}
+
+fn walkingpad_speed_selector(whole_kph: u8) -> Vec<KeyBinding> {
+    use Action::*;
+    let mut keys = vec![
+        KeyBinding::new(1, 1, Tile::HomeButton, Navigate(PageId::Home)),
+        KeyBinding::new(1, 2, Tile::BackButton, Navigate(PageId::WalkingPad)),
+        KeyBinding::new(1, 3, Tile::WalkingPadConnection, Acknowledge),
+        KeyBinding::new(1, 4, Tile::WalkingPadSpeed, Acknowledge),
+        KeyBinding::new(
+            1,
+            5,
+            Tile::WalkingPadStop,
+            WalkingPad(WalkingPadCommand::Stop),
+        ),
+    ];
+    for decimal in 0..10 {
+        let tenths = whole_kph * 10 + decimal;
+        if tenths > crate::integrations::walkingpad::MAX_SPEED_TENTHS {
+            break;
+        }
+        keys.push(KeyBinding::new(
+            2 + decimal / 5,
+            decimal % 5 + 1,
+            Tile::WalkingPadSpeedChoice(tenths),
+            WalkingPad(WalkingPadCommand::SetSpeed(tenths)),
+        ));
+    }
+    keys
 }
 
 fn walkingpad_stats() -> Vec<KeyBinding> {
@@ -1127,7 +1182,13 @@ pub fn required_integrations(id: PageId) -> Vec<IntegrationId> {
             IntegrationId::Meetings,
             IntegrationId::Spotify,
         ],
-        PageId::WalkingPad | PageId::WalkingPadStats => Vec::new(),
+        PageId::WalkingPad
+        | PageId::WalkingPadStats
+        | PageId::WalkingPadSpeed2
+        | PageId::WalkingPadSpeed3
+        | PageId::WalkingPadSpeed4
+        | PageId::WalkingPadSpeed5
+        | PageId::WalkingPadSpeed6 => Vec::new(),
     }
 }
 
@@ -1234,13 +1295,50 @@ mod tests {
             action(2, 3),
             Some(Action::WalkingPad(WalkingPadCommand::Increase))
         );
-        for slot in 0..5 {
+        for (slot, whole_kph) in (2..=6).enumerate() {
             let binding = page
                 .binding(KeyPosition::new(3, slot as u8 + 1))
-                .expect("quick speed");
-            assert_eq!(binding.tile, Tile::WalkingPadQuickSpeed(slot));
-            assert_eq!(binding.short, Action::WalkingPadQuickSpeed(slot));
-            assert_eq!(binding.long, Some(Action::SaveWalkingPadQuickSpeed(slot)));
+                .expect("speed band");
+            assert_eq!(binding.tile, Tile::WalkingPadSpeedBand(whole_kph));
+            assert_eq!(binding.long, None);
+        }
+    }
+
+    #[test]
+    fn walkingpad_speed_pages_offer_every_valid_tenth_plus_home_back_and_halt() {
+        for (id, whole_kph) in [
+            (PageId::WalkingPadSpeed2, 2),
+            (PageId::WalkingPadSpeed3, 3),
+            (PageId::WalkingPadSpeed4, 4),
+            (PageId::WalkingPadSpeed5, 5),
+            (PageId::WalkingPadSpeed6, 6),
+        ] {
+            let page = page(id);
+            assert_eq!(
+                page.binding(KeyPosition::new(1, 1)).map(|key| key.short),
+                Some(Action::Navigate(PageId::Home))
+            );
+            assert_eq!(
+                page.binding(KeyPosition::new(1, 2)).map(|key| key.short),
+                Some(Action::Navigate(PageId::WalkingPad))
+            );
+            assert_eq!(
+                page.binding(KeyPosition::new(1, 5)).map(|key| key.short),
+                Some(Action::WalkingPad(WalkingPadCommand::Stop))
+            );
+
+            let choices: Vec<_> = page
+                .keys
+                .iter()
+                .filter_map(|key| match key.short {
+                    Action::WalkingPad(WalkingPadCommand::SetSpeed(tenths)) => Some(tenths),
+                    _ => None,
+                })
+                .collect();
+            let expected: Vec<_> = (whole_kph * 10
+                ..=(whole_kph * 10 + 9).min(crate::integrations::walkingpad::MAX_SPEED_TENTHS))
+                .collect();
+            assert_eq!(choices, expected, "{id}");
         }
     }
 
@@ -1648,11 +1746,6 @@ mod tests {
                 (PageId::Dashboard, KeyPosition::new(1, 5)),
                 (PageId::Dashboard, KeyPosition::new(2, 1)),
                 (PageId::Dashboard, KeyPosition::new(2, 2)),
-                (PageId::WalkingPad, KeyPosition::new(3, 1)),
-                (PageId::WalkingPad, KeyPosition::new(3, 2)),
-                (PageId::WalkingPad, KeyPosition::new(3, 3)),
-                (PageId::WalkingPad, KeyPosition::new(3, 4)),
-                (PageId::WalkingPad, KeyPosition::new(3, 5)),
             ]
         );
     }

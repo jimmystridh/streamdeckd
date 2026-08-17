@@ -105,10 +105,15 @@ pub enum PageId {
     Dashboard,
     WalkingPad,
     WalkingPadStats,
+    WalkingPadSpeed2,
+    WalkingPadSpeed3,
+    WalkingPadSpeed4,
+    WalkingPadSpeed5,
+    WalkingPadSpeed6,
 }
 
 impl PageId {
-    pub const ALL: [PageId; 13] = [
+    pub const ALL: [PageId; 18] = [
         PageId::Home,
         PageId::Mixer,
         PageId::GitHub,
@@ -122,6 +127,11 @@ impl PageId {
         PageId::Dashboard,
         PageId::WalkingPad,
         PageId::WalkingPadStats,
+        PageId::WalkingPadSpeed2,
+        PageId::WalkingPadSpeed3,
+        PageId::WalkingPadSpeed4,
+        PageId::WalkingPadSpeed5,
+        PageId::WalkingPadSpeed6,
     ];
 
     pub const fn slug(self) -> &'static str {
@@ -139,6 +149,11 @@ impl PageId {
             PageId::Dashboard => "dashboard",
             PageId::WalkingPad => "walkingpad",
             PageId::WalkingPadStats => "walkingpad-stats",
+            PageId::WalkingPadSpeed2 => "walkingpad-speed-2",
+            PageId::WalkingPadSpeed3 => "walkingpad-speed-3",
+            PageId::WalkingPadSpeed4 => "walkingpad-speed-4",
+            PageId::WalkingPadSpeed5 => "walkingpad-speed-5",
+            PageId::WalkingPadSpeed6 => "walkingpad-speed-6",
         }
     }
 
@@ -157,6 +172,11 @@ impl PageId {
             PageId::Dashboard => "Dashboard 2",
             PageId::WalkingPad => "WalkingPad",
             PageId::WalkingPadStats => "WalkingPad Today",
+            PageId::WalkingPadSpeed2 => "WalkingPad 2.x km/h",
+            PageId::WalkingPadSpeed3 => "WalkingPad 3.x km/h",
+            PageId::WalkingPadSpeed4 => "WalkingPad 4.x km/h",
+            PageId::WalkingPadSpeed5 => "WalkingPad 5.x km/h",
+            PageId::WalkingPadSpeed6 => "WalkingPad 6.0 km/h",
         }
     }
 
@@ -175,6 +195,11 @@ impl PageId {
             PageId::Dashboard => 10,
             PageId::WalkingPad => 11,
             PageId::WalkingPadStats => 12,
+            PageId::WalkingPadSpeed2 => 13,
+            PageId::WalkingPadSpeed3 => 14,
+            PageId::WalkingPadSpeed4 => 15,
+            PageId::WalkingPadSpeed5 => 16,
+            PageId::WalkingPadSpeed6 => 17,
         }
     }
 }
@@ -187,7 +212,7 @@ impl fmt::Display for PageId {
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error(
-    "unknown page; expected one of home, dashboard, mixer, github, spotify, stensjon, pomodoro, weather, media, wispr, application, walkingpad, walkingpad-stats"
+    "unknown page; expected a documented page slug such as home, dashboard, walkingpad, walkingpad-stats, or walkingpad-speed-2"
 )]
 pub struct PageIdParseError;
 
@@ -209,6 +234,11 @@ impl FromStr for PageId {
             "dashboard" | "dashboard2" | "home2" | "more" => Ok(PageId::Dashboard),
             "walkingpad" | "walk" | "treadmill" => Ok(PageId::WalkingPad),
             "walkingpad-stats" | "walk-stats" | "treadmill-stats" => Ok(PageId::WalkingPadStats),
+            "walkingpad-speed-2" | "walk-speed-2" => Ok(PageId::WalkingPadSpeed2),
+            "walkingpad-speed-3" | "walk-speed-3" => Ok(PageId::WalkingPadSpeed3),
+            "walkingpad-speed-4" | "walk-speed-4" => Ok(PageId::WalkingPadSpeed4),
+            "walkingpad-speed-5" | "walk-speed-5" => Ok(PageId::WalkingPadSpeed5),
+            "walkingpad-speed-6" | "walk-speed-6" => Ok(PageId::WalkingPadSpeed6),
             _ => Err(PageIdParseError),
         }
     }
