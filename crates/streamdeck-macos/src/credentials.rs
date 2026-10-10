@@ -253,32 +253,18 @@ pub fn codex_credential_present(override_path: Option<&str>) -> bool {
     .exists()
 }
 
-/// Reads a generic password only when macOS can return it without authentication.
+/// Reads a generic password through `/usr/bin/security`.
+///
+/// Claude Code creates its item through that tool, so it is on the item's access
+/// list and reads silently. Calling Security.framework from this binary would be a
+/// different, untrusted requester and make macOS ask for the login password.
 #[cfg(target_os = "macos")]
 fn read_keychain_without_ui(service: &str) -> Option<String> {
-    use objc2::rc::Retained;
-    use objc2_local_authentication::LAContext;
-    use security_framework::item::{ItemClass, ItemSearchOptions, SearchResult};
-
-    let context = unsafe { LAContext::new() };
-    unsafe { context.setInteractionNotAllowed(true) };
-
-    let mut options = ItemSearchOptions::new();
-    options
-        .class(ItemClass::generic_password())
-        .service(service)
-        .load_data(true)
-        .skip_authenticated_items(true);
-    #[allow(deprecated)]
-    unsafe {
-        options.authentication_context(Retained::into_raw(context).cast());
-    }
-    let results = options.search().ok()?;
-
-    results.into_iter().find_map(|result| match result {
-        SearchResult::Data(bytes) => String::from_utf8(bytes).ok(),
-        _ => None,
-    })
+    let output = security_command(service, true)?;
+    String::from_utf8(output.stdout)
+        .ok()
+        .map(|payload| payload.trim().to_string())
+        .filter(|payload| !payload.is_empty())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -288,25 +274,31 @@ fn read_keychain_without_ui(_service: &str) -> Option<String> {
 
 /// Whether a Keychain item exists.
 ///
-/// Asks only for attributes, never the data. Requesting the secret is what puts up
-/// the authorization prompt, so a presence check that avoids it stays fast even for
-/// a binary that has not been granted access.
+/// Asks only for attributes, never the data, so a health check cannot be blocked
+/// by an authorization prompt.
 #[cfg(target_os = "macos")]
 pub fn keychain_item_exists(service: &str) -> bool {
-    use security_framework::item::{ItemClass, ItemSearchOptions};
-
-    ItemSearchOptions::new()
-        .class(ItemClass::generic_password())
-        .service(service)
-        .load_attributes(true)
-        .load_data(false)
-        .search()
-        .is_ok_and(|results| !results.is_empty())
+    security_command(service, false).is_some()
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn keychain_item_exists(_service: &str) -> bool {
     false
+}
+
+#[cfg(target_os = "macos")]
+fn security_command(service: &str, with_data: bool) -> Option<std::process::Output> {
+    let mut command = std::process::Command::new("/usr/bin/security");
+    command.args(["find-generic-password", "-s", service]);
+    if with_data {
+        command.arg("-w");
+    }
+    command
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
 }
 
 #[cfg(test)]

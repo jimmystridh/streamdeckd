@@ -360,11 +360,13 @@ artwork is only fetched from Spotify's own image hosts.
 
 ### Claude credentials
 
-Background usage refreshes never request interactive Keychain access. The daemon
+Background usage refreshes never prompt for the login password. The daemon
 reuses a credential in memory for 30 minutes, checks
-`~/.claude/.credentials.json`, then queries the Claude Code Keychain entry with
-authentication UI explicitly disabled. If an existing entry cannot be read
-silently, it is left alone for six hours rather than repeatedly asking macOS.
+`~/.claude/.credentials.json`, then reads the Claude Code Keychain entry through
+`/usr/bin/security`, which Claude Code already trusts. Reading it from
+streamdeckd's own Security.framework calls would be an untrusted requester and
+make macOS ask. If an existing entry still cannot be read, it is left alone for
+six hours rather than repeatedly asking macOS.
 
 Run `claude` when the tile reports that its credential is missing or expired.
 
