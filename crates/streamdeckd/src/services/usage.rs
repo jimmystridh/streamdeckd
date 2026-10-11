@@ -3,7 +3,7 @@
 //! Both read an existing credential the user already has, hold the token only for
 //! the duration of one request, and never log any part of it.
 
-use streamdeck_core::integrations::claude::{self, ClaudeUsage, BETA_HEADER};
+use streamdeck_core::integrations::claude::{self, ClaudeUsage, BETA_HEADER, USER_AGENT};
 use streamdeck_core::integrations::codex::{self, CodexUsage};
 use streamdeck_macos::credentials::{self, CredentialError};
 
@@ -37,6 +37,7 @@ pub async fn fetch_claude(client: &HttpClient, now_ms: i64) -> Result<ClaudeUsag
                 ("Accept", "application/json"),
                 ("Authorization", &authorization),
                 ("anthropic-beta", BETA_HEADER),
+                ("User-Agent", USER_AGENT),
             ],
             timeouts::USAGE,
         )

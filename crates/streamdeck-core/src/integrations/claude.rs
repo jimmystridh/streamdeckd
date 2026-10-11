@@ -14,6 +14,8 @@ const INTEGRATION: &str = "claude-usage";
 pub const ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 /// The beta header the OAuth usage endpoint requires.
 pub const BETA_HEADER: &str = "oauth-2025-04-20";
+/// The usage endpoint answers 429 with `retry-after: 0` to any other client.
+pub const USER_AGENT: &str = "claude-code/2.1.0";
 
 /// One rate-limit window.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
